@@ -7,6 +7,7 @@
   let renderer, scene, camera, ball, shadowDisk, trailGeo, trailPos;
   let traj = [], animIdx = 0, running = false;
   let trailLine = null, trailMat = null;
+  const yardageMarkers = []; // { mesh, yds } for scale-in animation
 
   // Load Lexend Deca font bundled with the extension
   const _fontUrl = document.currentScript?.dataset?.fontUrl;
@@ -64,45 +65,33 @@
       ]);
     }
 
-    const onFairway = Math.abs(offline) < 25;
-
-    // Descent angle drives bounce behavior
-    const descent = descentAngle || 40;
-    // Steeper descent = higher first bounce, less forward travel
-    const firstBounceHt = peak * (onFairway ? 0.06 : 0.10) * Math.min(descent / 40, 1.5);
-    const bounceForwardFactor = Math.max(0.1, 1.0 - descent / 80);
-
-    // Bounce parameters
-    const bounces = onFairway
-      ? [{ htScale: 1.0, fwd: 0.22 }, { htScale: 0.35, fwd: 0.10 }, { htScale: 0.12, fwd: 0.04 }, { htScale: 0.04, fwd: 0.015 }]
-      : [{ htScale: 1.0, fwd: 0.15 }, { htScale: 0.25, fwd: 0.06 }, { htScale: 0.06, fwd: 0.02 }];
-
-    // Phase 2: bounces — each gets enough points to feel natural
+    // Phase 2 & 3: bounces + roll — all points evenly spaced in Z
+    // so playback speed is constant (no lunge)
     let curZ = carry;
-    let curX = offline;
-    let usedBounceDist = 0;
-    const PTS_PER_BOUNCE = 40; // enough points for smooth mini-arcs
+    const totalGround = 180;
+    const bounces = [
+      { ht: peak * 0.05,  fwd: roll * 0.15 },
+      { ht: peak * 0.015, fwd: roll * 0.08 },
+      { ht: peak * 0.004, fwd: roll * 0.04 },
+    ];
+    // Remaining distance is pure roll
+    const bounceDist = roll * (0.15 + 0.08 + 0.04);
+    const rollDist = roll - bounceDist;
+    // Points per section proportional to distance
+    const bouncePts = bounces.map(b => Math.max(10, Math.round(totalGround * b.fwd / roll)));
+    const rollPts = totalGround - bouncePts.reduce((a, b) => a + b, 0);
 
-    for (const b of bounces) {
-      const bh = firstBounceHt * b.htScale;
-      const fwd = roll * b.fwd * bounceForwardFactor;
-      usedBounceDist += fwd;
-      if (bh < 0.01 && fwd < 0.05) break; // too small to see
-      for (let i = 1; i <= PTS_PER_BOUNCE; i++) {
-        const t = i / PTS_PER_BOUNCE;
-        pts.push([curX, Math.max(0, 4 * bh * t * (1 - t)), curZ + t * fwd]);
+    bounces.forEach((b, idx) => {
+      const n = bouncePts[idx];
+      for (let i = 1; i <= n; i++) {
+        const t = i / n;
+        pts.push([offline, Math.max(0, 4 * b.ht * t * (1 - t)), curZ + t * b.fwd]);
       }
-      curZ += fwd;
-    }
-
-    // Phase 3: ground roll (long, gradual deceleration)
-    const rollRemaining = Math.max(0, roll - usedBounceDist);
-    const ROLL_PTS = onFairway ? 120 : 60;
-    for (let i = 1; i <= ROLL_PTS; i++) {
-      const t = i / ROLL_PTS;
-      // Quartic ease-out for very gradual stop
-      const ease = 1 - Math.pow(1 - t, 4);
-      pts.push([curX, 0, curZ + ease * rollRemaining]);
+      curZ += b.fwd;
+    });
+    for (let i = 1; i <= rollPts; i++) {
+      const t = i / rollPts;
+      pts.push([offline, 0, curZ + t * rollDist]);
     }
 
     return pts;
@@ -537,6 +526,7 @@
       const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
       m.position.set(cx, h / 2 + 0.1, cz);
       scene.add(m);
+      return m;
     }
 
     // Helper: paint a half-circle arc on the ground as a mesh strip (for reliable thickness)
@@ -579,8 +569,13 @@
     // Paint numbers once Lexend Deca font is loaded
     fontReady.then(() => {
       [50, 100, 150, 200, 250].forEach(yds => {
-        paintNumber(-6.5, yds, yds, 1.2);
-        paintNumber( 6.5, yds, yds, 1.2);
+        const left  = paintNumber(-9, yds, yds, 1.2);
+        const right = paintNumber( 9, yds, yds, 1.2);
+        yardageMarkers.push({ mesh: left, yds }, { mesh: right, yds });
+        // 50yd marker starts visible; others start hidden
+        const startScale = yds === 50 ? 1 : 0;
+        left.scale.set(startScale, startScale, startScale);
+        right.scale.set(startScale, startScale, startScale);
       });
     });
 
@@ -628,21 +623,35 @@
     const dt = (now - lastFrameTime) / 1000;
     lastFrameTime = now;
 
-    // Pacing: flight portion plays in real hang-time, ground portion gets its own time
+    // Pacing: flight plays in real hang-time, ground phase gets its own timer
     const hangTime = Math.max(shot.hangTime || 3, 2);
     const groundTime = 4.0; // seconds for bounce + roll
-    const flightFrac = FLIGHT_FRAMES / traj.length; // what fraction of points is flight
-    const totalDuration = hangTime / flightFrac; // scale so flight takes hangTime seconds
-    // But cap ground portion so it doesn't rush
-    const minDuration = hangTime + groundTime;
-    const duration = Math.max(totalDuration, minDuration);
+    const groundPts = traj.length - FLIGHT_FRAMES;
 
-    animProgress = Math.min(animProgress + dt / duration, 1.0);
-    animIdx = Math.min(Math.floor(animProgress * (traj.length - 1)), traj.length - 1);
+    animProgress += dt;
+
+    if (animProgress <= hangTime) {
+      // Flight phase: map elapsed time to flight points
+      const flightT = animProgress / hangTime;
+      animIdx = Math.min(Math.floor(flightT * FLIGHT_FRAMES), FLIGHT_FRAMES);
+    } else {
+      // Ground phase: ease-out so ball decelerates smoothly to a stop
+      const groundLinear = Math.min((animProgress - hangTime) / groundTime, 1.0);
+      const groundT = groundLinear * (2 - groundLinear); // quadratic ease-out
+      animIdx = FLIGHT_FRAMES + Math.min(Math.floor(groundT * groundPts), groundPts - 1);
+    }
     const [px, py, pz] = traj[animIdx];
 
     ball.position.set(px, py, pz);
     ball.rotation.x += animIdx <= FLIGHT_FRAMES ? 0.25 : 0.08;
+
+    // Scale yardage markers as ball approaches — grow from 0 to 1 over 30 yards
+    for (const ym of yardageMarkers) {
+      const dist = ym.yds - pz;
+      const s = dist <= 0 ? 1 : dist >= 30 ? 0 : 1 - dist / 30;
+      const sc = s * s * (3 - 2 * s); // smoothstep
+      ym.mesh.scale.set(sc, sc, sc);
+    }
 
     const hf = Math.max(0.08, 1 - py / Math.max(shot.peakHeight || 1, 0.1));
     shadowDisk.position.x = px;
@@ -673,7 +682,7 @@
     _lk.set(px, py * 0.3, pz + 10);
     camera.lookAt(_lk);
 
-    if (animIdx >= traj.length - 1) {
+    if (animProgress >= hangTime + groundTime || animIdx >= traj.length - 1) {
       running = false;
       const t0 = performance.now(), dur = 1800, from = camera.position.clone();
       function easeHome(now) {
