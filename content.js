@@ -4,7 +4,15 @@
 (function () {
   if (document.getElementById('gsv-overlay')) return;
 
-  // ── Shot data (defaults until live data arrives) ────────────────────────
+  // ── Club list (Driver – SW, no putter) ──────────────────────────────────
+  const clubs = [
+    'Driver','3W','5W','7W',
+    '2i','3i','4i','5i','6i','7i','8i','9i',
+    'PW','GW','SW',
+  ];
+  let selectedClub = clubs[0];
+
+  // ── Shot data (empty until live data or loaded from storage) ─────────
   const shot = {
     ballSpeed:0, vLaunchAngle:0, hLaunchAngle:0,
     totalSpin:0, spinAxis:0, backspin:0, sidespin:0,
@@ -13,6 +21,37 @@
     clubSpeed:0, smashFactor:0, distEfficiency:0,
     shotName:'', shotRank:'', shotColor:'',
   };
+
+  let lastShotSig = ''; // dedup: skip if Firestore replays the same shot on reload
+
+  function shotHasData() {
+    return shot.ballSpeed > 0;
+  }
+
+  // Load last saved shot for the selected club into the shot object
+  function loadLastShot(callback) {
+    chrome.storage.local.get(['savedShots'], ({ savedShots }) => {
+      const clubShots = (savedShots || []).filter(s => s.club === selectedClub);
+      if (clubShots.length > 0) {
+        const last = clubShots[clubShots.length - 1];
+        const keys = ['ballSpeed','vLaunchAngle','hLaunchAngle','totalSpin','spinAxis',
+          'backspin','sidespin','carryDist','totalDist','offlineDist','peakHeight',
+          'hangTime','descentAngle','clubSpeed','smashFactor','distEfficiency',
+          'shotName','shotRank'];
+        for (const k of keys) {
+          if (last[k] !== undefined) shot[k] = last[k];
+        }
+        shot.shotColor = '';
+        // Set dedup signature so Firestore replay of this same shot won't re-save
+        lastShotSig = `${shot.ballSpeed}|${shot.vLaunchAngle}|${shot.carryDist}|${shot.totalSpin}`;
+      } else {
+        // No saved shots for this club — reset to empty
+        Object.keys(shot).forEach(k => shot[k] = typeof shot[k] === 'string' ? '' : 0);
+        lastShotSig = '';
+      }
+      if (callback) callback();
+    });
+  }
 
   // ── Ball flight calculator ─────────────────────────────────────────────
   // Simplified trajectory model from ball speed, launch angle, and spin.
@@ -156,8 +195,9 @@
       const valid = fields.valid_launch?.booleanValue !== false;
       if (valid && updateShotFromFirestore(fields)) {
         console.log('[GSV] New shot:', shot.ballSpeed, 'mph,', shot.carryDist, 'yds carry');
-        renderStats();
-        renderEditBar();
+        autoSaveShot(() => {
+          refreshClubAverages(() => renderStats());
+        });
         // Only send to scene if overlay is already open — don't auto-open
         if (overlay.style.display === 'flex') {
           window.postMessage({ type:'gsv-update', shot }, '*');
@@ -200,8 +240,13 @@
         <span style="color:#52b788;font-weight:700;font-size:14px;letter-spacing:1px;">SHOT REPLAY</span>
       </div>
       <div style="display:flex;gap:8px;align-items:center;">
+        <select id="gsv-club-select" style="background:#0d1117;border:1px solid #30363d;color:#e6edf3;border-radius:6px;padding:5px 10px;font-size:12px;font-weight:700;cursor:pointer;outline:none;">
+          ${clubs.map(c => `<option value="${c}">${c}</option>`).join('')}
+        </select>
         <button id="gsv-replay-btn" style="background:#1e3a2f;border:1px solid #52b788;color:#52b788;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:12px;font-weight:700;">▶ REPLAY</button>
-        <button id="gsv-save-btn"   style="background:#1a2a3a;border:1px solid #388bfd;color:#388bfd;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:12px;font-weight:700;">💾 SAVE</button>
+        <button id="gsv-birdseye-btn" style="background:#1a2a3a;border:1px solid #f0c040;color:#f0c040;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:12px;font-weight:700;">🦅 BIRDS EYE</button>
+        <button id="gsv-table-btn"   style="background:#1a2a3a;border:1px solid #8b949e;color:#8b949e;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:12px;font-weight:700;">📋 TABLE</button>
+        <button id="gsv-csv-btn"    style="background:#1a2a3a;border:1px solid #da8ee7;color:#da8ee7;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:12px;font-weight:700;">📥 CSV</button>
         <span id="gsv-save-status"  style="font-size:11px;color:#52b788;min-width:80px;"></span>
         <button id="gsv-close-btn"  style="background:none;border:none;color:#6e7681;font-size:22px;cursor:pointer;padding:0 4px;">✕</button>
       </div>
@@ -209,17 +254,12 @@
 
     <div id="gsv-canvas-wrap" style="flex:1;position:relative;overflow:hidden;min-height:0;"></div>
 
+    <div id="gsv-table-panel" style="display:none;flex:1;overflow-y:auto;background:#0d1117;padding:10px 20px;min-height:0;">
+    </div>
+
     <div id="gsv-statsbar" style="display:flex;flex-wrap:wrap;gap:6px;padding:10px 20px;
       background:#0d1117;border-top:1px solid #21262d;flex-shrink:0;"></div>
 
-    <div id="gsv-editbar" style="display:none;flex-wrap:wrap;gap:6px;
-      padding:10px 20px 14px;background:#0a0f15;border-top:1px solid #21262d;flex-shrink:0;"></div>
-
-    <div style="text-align:center;padding:5px;background:#0d1117;
-      border-top:1px solid #161b22;flex-shrink:0;">
-      <button id="gsv-edit-toggle" style="background:none;border:none;
-        color:#6e7681;font-size:11px;cursor:pointer;letter-spacing:.5px;">▲ EDIT SHOT DATA</button>
-    </div>
   `;
   document.body.appendChild(overlay);
 
@@ -235,6 +275,26 @@
     ['Descent','descentAngle','°'],['Efficiency','distEfficiency','%'],
   ];
 
+  // ── Club averages for stat comparison ──────────────────────────────────
+  let clubAvgs = {}; // key → average value for selectedClub
+
+  function refreshClubAverages(callback) {
+    chrome.storage.local.get(['savedShots'], ({ savedShots }) => {
+      const shots = (savedShots || []).filter(s => s.club === selectedClub);
+      clubAvgs = {};
+      if (shots.length > 0) {
+        const numericKeys = statDefs.map(([,k]) => k);
+        for (const k of numericKeys) {
+          const vals = shots.map(s => s[k]).filter(v => typeof v === 'number' && v !== 0);
+          if (vals.length > 0) {
+            clubAvgs[k] = vals.reduce((a, b) => a + b, 0) / vals.length;
+          }
+        }
+      }
+      if (callback) callback();
+    });
+  }
+
   function renderStats() {
     const rankColors = { S:'#ffd700', A:'#52b788', B:'#388bfd', C:'#8b949e', D:'#6e4d30' };
     const rankCol = rankColors[shot.shotRank] || '#52b788';
@@ -249,79 +309,236 @@
 
     const cards = statDefs
       .filter(([,k]) => shot[k] !== 0 && shot[k] !== '')
-      .map(([l,k,u]) => `
+      .map(([l,k,u]) => {
+        const val = shot[k];
+        const avg = clubAvgs[k];
+        let arrow = '', arrowColor = '#8b949e';
+        if (avg != null) {
+          const diff = val - avg;
+          const threshold = Math.abs(avg) * 0.005; // ~0.5% dead zone
+          if (diff > threshold)      { arrow = '▲'; arrowColor = '#52b788'; }
+          else if (diff < -threshold) { arrow = '▼'; arrowColor = '#f85149'; }
+          else                        { arrow = '—'; arrowColor = '#e6edf3'; }
+        }
+        const avgLine = avg != null ? `<div style="color:#6e7681;font-size:9px;margin-top:1px;">avg ${Math.round(avg*10)/10}${u}</div>` : '';
+        return `
       <div style="background:#161b22;border:1px solid #21262d;border-radius:8px;
         padding:6px 14px;text-align:center;min-width:80px;">
-        <div style="color:#52b788;font-size:14px;font-weight:700;">${shot[k]}${u}</div>
+        <div style="font-size:14px;font-weight:700;">
+          <span style="color:${arrowColor};">${arrow}</span>
+          <span style="color:#52b788;">${val}${u}</span>
+        </div>
+        ${avgLine}
         <div style="color:#6e7681;font-size:9px;margin-top:2px;text-transform:uppercase;
           letter-spacing:.5px;">${l}</div>
-      </div>`).join('');
+      </div>`;
+      }).join('');
 
     overlay.querySelector('#gsv-statsbar').innerHTML = badge + cards;
   }
 
-  // ── Edit bar ───────────────────────────────────────────────────────────
-  const editDefs = [
-    ['Carry (yds)','carryDist'],['Total (yds)','totalDist'],
-    ['Ball Speed (mph)','ballSpeed'],['Peak Ht (yds)','peakHeight'],
-    ['V-Launch (°)','vLaunchAngle'],['Hang Time (s)','hangTime'],
-    ['Club Speed (mph)','clubSpeed'],['Total Spin (rpm)','totalSpin'],
-    ['Offline (yds)','offlineDist'],['H-Launch (°)','hLaunchAngle'],
-  ];
+  loadLastShot(() => refreshClubAverages(() => renderStats()));
 
-  function renderEditBar() {
-    overlay.querySelector('#gsv-editbar').innerHTML = editDefs.map(([l,k]) => `
-      <div style="display:flex;flex-direction:column;min-width:110px;">
-        <span style="color:#6e7681;font-size:9px;text-transform:uppercase;
-          letter-spacing:.5px;margin-bottom:3px;">${l}</span>
-        <input data-key="${k}" type="number" step="0.1" value="${shot[k]}"
-          style="background:#0d1117;border:1px solid #30363d;color:#e6edf3;
-          border-radius:6px;padding:4px 8px;font-size:12px;outline:none;width:100%;"/>
-      </div>`).join('');
-    overlay.querySelectorAll('#gsv-editbar input').forEach(inp => {
-      inp.addEventListener('change', () => {
-        shot[inp.dataset.key] = parseFloat(inp.value) || 0;
-        renderStats();
-        window.postMessage({ type:'gsv-update', shot }, '*');
+  // ── Club selector ───────────────────────────────────────────────────────
+  overlay.querySelector('#gsv-club-select').addEventListener('change', (e) => {
+    selectedClub = e.target.value;
+    renderLandingDots();
+    loadLastShot(() => refreshClubAverages(() => renderStats()));
+  });
+
+  // ── Auto-save shot to CSV via background worker ───────────────────────
+
+  function autoSaveShot(callback) {
+    // Fingerprint the shot by its key metrics — if identical, it's a replay
+    const sig = `${shot.ballSpeed}|${shot.vLaunchAngle}|${shot.carryDist}|${shot.totalSpin}`;
+    if (sig === lastShotSig) {
+      if (callback) callback();
+      return;
+    }
+    lastShotSig = sig;
+
+    const st = overlay.querySelector('#gsv-save-status');
+    const row = {
+      club: selectedClub,
+      timestamp: new Date().toISOString(),
+      ballSpeed: shot.ballSpeed,
+      vLaunchAngle: shot.vLaunchAngle,
+      hLaunchAngle: shot.hLaunchAngle,
+      carryDist: shot.carryDist,
+      totalDist: shot.totalDist,
+      offlineDist: shot.offlineDist,
+      peakHeight: shot.peakHeight,
+      hangTime: shot.hangTime,
+      totalSpin: shot.totalSpin,
+      backspin: shot.backspin,
+      sidespin: shot.sidespin,
+      spinAxis: shot.spinAxis,
+      clubSpeed: shot.clubSpeed,
+      smashFactor: shot.smashFactor,
+      descentAngle: shot.descentAngle,
+      distEfficiency: shot.distEfficiency,
+      shotName: shot.shotName,
+      shotRank: shot.shotRank,
+    };
+    chrome.runtime.sendMessage({ type: 'save-shot', row }, (resp) => {
+      if (resp?.count) {
+        st.style.color = '#52b788'; st.textContent = `✓ Saved (${resp.count})`;
+        setTimeout(() => st.textContent = '', 3000);
+      }
+      renderLandingDots();
+      if (callback) callback();
+    });
+  }
+
+  // ── Landing dots — show last 100 carry points for selected club ────────
+  function renderLandingDots() {
+    chrome.storage.local.get(['savedShots'], ({ savedShots }) => {
+      const shots = (savedShots || []).filter(s => s.club === selectedClub);
+      const recent = shots.slice(-100).map(s => ({
+        carryDist: s.carryDist,
+        offlineDist: s.offlineDist,
+      }));
+      window.postMessage({ type: 'gsv-landing-dots', dots: recent }, '*');
+    });
+  }
+
+  // ── Export CSV ─────────────────────────────────────────────────────────
+  const CSV_HEADERS = ['Club','Timestamp','BallSpeed','vLaunchAngle','hLaunchAngle','CarryDist','TotalDist','OfflineDist','PeakHeight','HangTime','TotalSpin','Backspin','Sidespin','SpinAxis','ClubSpeed','SmashFactor','DescentAngle','DistEfficiency','ShotName','ShotRank'];
+
+  overlay.querySelector('#gsv-csv-btn').addEventListener('click', () => {
+    const st = overlay.querySelector('#gsv-save-status');
+    chrome.storage.local.get(['savedShots'], ({ savedShots }) => {
+      const shots = savedShots || [];
+      if (shots.length === 0) {
+        st.style.color = '#f85149'; st.textContent = '⚠ No saved shots';
+        setTimeout(() => st.textContent = '', 3000);
+        return;
+      }
+      const csvRows = [CSV_HEADERS.join(',')];
+      for (const s of shots) {
+        csvRows.push([
+          s.club, s.timestamp, s.ballSpeed, s.vLaunchAngle, s.hLaunchAngle,
+          s.carryDist, s.totalDist, s.offlineDist, s.peakHeight, s.hangTime,
+          s.totalSpin, s.backspin, s.sidespin, s.spinAxis, s.clubSpeed,
+          s.smashFactor, s.descentAngle, s.distEfficiency,
+          `"${(s.shotName||'').replace(/"/g,'""')}"`, s.shotRank,
+        ].join(','));
+      }
+      const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'nova-shots.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+      st.style.color = '#52b788'; st.textContent = `✓ Exported ${shots.length} shots`;
+      setTimeout(() => st.textContent = '', 3000);
+    });
+  });
+
+  // ── Shot table ─────────────────────────────────────────────────────────
+  let tableOpen = false;
+  const tablePanel = overlay.querySelector('#gsv-table-panel');
+  const canvasWrap = overlay.querySelector('#gsv-canvas-wrap');
+  const tableBtn = overlay.querySelector('#gsv-table-btn');
+
+  function renderTable() {
+    chrome.storage.local.get(['savedShots'], ({ savedShots }) => {
+      const shots = savedShots || [];
+      if (shots.length === 0) {
+        tablePanel.innerHTML = '<div style="color:#6e7681;text-align:center;padding:40px;">No saved shots</div>';
+        return;
+      }
+      const thStyle = 'padding:6px 10px;text-align:left;color:#8b949e;font-size:10px;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid #21262d;position:sticky;top:0;background:#0d1117;';
+      const tdStyle = 'padding:5px 10px;font-size:12px;color:#e6edf3;border-bottom:1px solid #161b22;';
+      let html = `<table style="width:100%;border-collapse:collapse;font-family:'Segoe UI',system-ui,sans-serif;">
+        <thead><tr>
+          <th style="${thStyle}"></th>
+          <th style="${thStyle}">Club</th>
+          <th style="${thStyle}">Time</th>
+          <th style="${thStyle}">Ball Spd</th>
+          <th style="${thStyle}">Carry</th>
+          <th style="${thStyle}">Total</th>
+          <th style="${thStyle}">Offline</th>
+          <th style="${thStyle}">Peak</th>
+          <th style="${thStyle}">Spin</th>
+          <th style="${thStyle}">Launch</th>
+          <th style="${thStyle}">Shot</th>
+        </tr></thead><tbody>`;
+      // Show newest first
+      for (let i = shots.length - 1; i >= 0; i--) {
+        const s = shots[i];
+        const time = s.timestamp ? new Date(s.timestamp).toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }) : '—';
+        html += `<tr>
+          <td style="${tdStyle}"><button data-del-idx="${i}" style="background:none;border:none;color:#f85149;cursor:pointer;font-size:14px;padding:0 4px;">✕</button></td>
+          <td style="${tdStyle}font-weight:700;color:#52b788;">${s.club||'—'}</td>
+          <td style="${tdStyle}color:#6e7681;">${time}</td>
+          <td style="${tdStyle}">${s.ballSpeed||0} mph</td>
+          <td style="${tdStyle}font-weight:700;">${s.carryDist||0} yds</td>
+          <td style="${tdStyle}">${s.totalDist||0} yds</td>
+          <td style="${tdStyle}">${s.offlineDist||0} yds</td>
+          <td style="${tdStyle}">${s.peakHeight||0} yds</td>
+          <td style="${tdStyle}">${s.totalSpin||0} rpm</td>
+          <td style="${tdStyle}">${s.vLaunchAngle||0}°</td>
+          <td style="${tdStyle}color:#8b949e;">${s.shotName||'—'} ${s.shotRank||''}</td>
+        </tr>`;
+      }
+      html += '</tbody></table>';
+      tablePanel.innerHTML = html;
+
+      // Wire up delete buttons
+      tablePanel.querySelectorAll('button[data-del-idx]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const idx = parseInt(btn.dataset.delIdx);
+          chrome.storage.local.get(['savedShots'], ({ savedShots }) => {
+            const shots = savedShots || [];
+            shots.splice(idx, 1);
+            chrome.storage.local.set({ savedShots: shots }, () => {
+              renderTable();
+              renderLandingDots();
+              loadLastShot(() => refreshClubAverages(() => renderStats()));
+            });
+          });
+        });
       });
     });
   }
 
-  renderStats();
-  renderEditBar();
-
-  // ── Edit toggle ────────────────────────────────────────────────────────
-  let editOpen = false;
-  overlay.querySelector('#gsv-edit-toggle').addEventListener('click', () => {
-    editOpen = !editOpen;
-    overlay.querySelector('#gsv-editbar').style.display = editOpen ? 'flex' : 'none';
-    overlay.querySelector('#gsv-edit-toggle').textContent =
-      editOpen ? '▼ EDIT SHOT DATA' : '▲ EDIT SHOT DATA';
-  });
-
-  // ── Save to Google Sheet ───────────────────────────────────────────────
-  overlay.querySelector('#gsv-save-btn').addEventListener('click', () => {
-    chrome.storage.sync.get(['scriptUrl'], ({ scriptUrl }) => {
-      const st = overlay.querySelector('#gsv-save-status');
-      if (!scriptUrl) {
-        st.style.color = '#f85149';
-        st.textContent = '⚠ No URL in Options';
-        setTimeout(() => st.textContent = '', 3000);
-        return;
-      }
-      st.style.color = '#8b949e'; st.textContent = 'Saving…';
-      fetch(scriptUrl, {
-        method: 'POST', body: JSON.stringify(shot), mode: 'no-cors',
-        headers: { 'Content-Type': 'application/json' },
-      })
-      .then(() => { st.style.color='#52b788'; st.textContent='✓ Saved!'; setTimeout(()=>st.textContent='',3000); })
-      .catch(() => { st.style.color='#f85149'; st.textContent='✗ Failed'; setTimeout(()=>st.textContent='',3000); });
-    });
+  tableBtn.addEventListener('click', () => {
+    tableOpen = !tableOpen;
+    if (tableOpen) {
+      tableBtn.style.background = '#2a2a3a';
+      tableBtn.textContent = '📋 CLOSE';
+      canvasWrap.style.display = 'none';
+      tablePanel.style.display = 'block';
+      renderTable();
+    } else {
+      tableBtn.style.background = '#1a2a3a';
+      tableBtn.textContent = '📋 TABLE';
+      tablePanel.style.display = 'none';
+      canvasWrap.style.display = 'block';
+    }
   });
 
   // ── Replay button ──────────────────────────────────────────────────────
   overlay.querySelector('#gsv-replay-btn').addEventListener('click', () => {
-    window.postMessage({ type: 'gsv-replay' }, '*');
+    if (shotHasData()) {
+      window.postMessage({ type: 'gsv-update', shot }, '*');
+    }
+  });
+
+  // ── Birds eye button ──────────────────────────────────────────────────
+  let birdsEyeActive = false;
+  const birdsEyeBtn = overlay.querySelector('#gsv-birdseye-btn');
+  birdsEyeBtn.addEventListener('click', () => {
+    birdsEyeActive = !birdsEyeActive;
+    if (birdsEyeActive) {
+      birdsEyeBtn.style.background = '#3a2a00';
+      birdsEyeBtn.textContent = '🦅 NORMAL';
+    } else {
+      birdsEyeBtn.style.background = '#1a2a3a';
+      birdsEyeBtn.textContent = '🦅 BIRDS EYE';
+    }
+    window.postMessage({ type: 'gsv-birdseye', active: birdsEyeActive }, '*');
   });
 
   // ── Close button ───────────────────────────────────────────────────────
@@ -334,8 +551,8 @@
 
   function injectScripts() {
     if (sceneReady) {
-      // Already loaded — just send current shot data
-      window.postMessage({ type: 'gsv-init', shot }, '*');
+      // Already loaded — only send shot data if we have real data
+      if (shotHasData()) window.postMessage({ type: 'gsv-init', shot }, '*');
       return;
     }
     // Guard against invalidated extension context (e.g. after reload)
@@ -358,7 +575,9 @@
   window.addEventListener('message', (e) => {
     if (e.data?.type === 'gsv-ready') {
       sceneReady = true;
-      window.postMessage({ type: 'gsv-init', shot }, '*');
+      // Only send shot data if we have a real shot loaded
+      if (shotHasData()) window.postMessage({ type: 'gsv-init', shot }, '*');
+      renderLandingDots();
     }
   });
 
@@ -366,6 +585,7 @@
   btn.addEventListener('click', () => {
     overlay.style.display = 'flex';
     requestAnimationFrame(() => requestAnimationFrame(injectScripts));
+    if (sceneReady) renderLandingDots();
   });
 
 })();

@@ -5,9 +5,13 @@
   window.__gsvSceneLoaded = true;
 
   let renderer, scene, camera, ball, shadowDisk, trailGeo, trailPos;
+  let distSprite = null, distCanvas = null, distCtx = null, distTex = null;
   let traj = [], animIdx = 0, running = false;
   let trailLine = null, trailMat = null;
   const yardageMarkers = []; // { mesh, yds } for scale-in animation
+  const landingDots = []; // meshes for carry landing points
+  let avgDotMesh = null; // orange average landing zone marker
+  let birdsEye = false;
 
   // Load Lexend Deca font bundled with the extension
   const _fontUrl = document.currentScript?.dataset?.fontUrl;
@@ -125,7 +129,72 @@
     if (d.type === 'gsv-replay') {
       replay();
     }
+    if (d.type === 'gsv-landing-dots') {
+      updateLandingDots(d.dots);
+      if (birdsEye) updateBirdsEye(); // recenter if dots changed
+    }
+    if (d.type === 'gsv-birdseye') {
+      birdsEye = d.active;
+      if (birdsEye) {
+        updateBirdsEye();
+      } else {
+        leaveBirdsEye();
+      }
+    }
   });
+
+  // ── Landing dots for carry distance history ───────────────────────────
+  function updateLandingDots(dots) {
+    // Remove existing dots and average marker
+    for (const m of landingDots) scene.remove(m);
+    landingDots.length = 0;
+    if (avgDotMesh) { scene.remove(avgDotMesh); avgDotMesh = null; }
+    if (!scene || !dots || dots.length === 0) return;
+
+    const count = dots.length; // already limited to 100 most recent
+    const dotGeo = new THREE.CircleGeometry(0.35, 16);
+    let sumX = 0, sumZ = 0;
+    for (let i = 0; i < count; i++) {
+      const d = dots[i];
+      const dx = d.offlineDist || 0;
+      const dz = d.carryDist || 0;
+      sumX += dx;
+      sumZ += dz;
+      // Opacity: oldest=0.15, newest=0.9
+      const age = count > 1 ? i / (count - 1) : 1;
+      const opacity = 0.15 + age * 0.75;
+      const dotMat = new THREE.MeshBasicMaterial({
+        color: 0x4da6ff,
+        transparent: true,
+        opacity,
+        depthWrite: false,
+      });
+      const mesh = new THREE.Mesh(dotGeo, dotMat);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.position.set(dx, 0.08, dz);
+      mesh.renderOrder = 3;
+      scene.add(mesh);
+      landingDots.push(mesh);
+    }
+
+    // Average landing zone — orange, 3x size, shown when 3+ shots
+    if (count >= 3) {
+      const avgX = sumX / count;
+      const avgZ = sumZ / count;
+      const avgGeo = new THREE.CircleGeometry(0.35 * 3, 24);
+      const avgMat = new THREE.MeshBasicMaterial({
+        color: 0xff8c00,
+        transparent: true,
+        opacity: 0.7,
+        depthWrite: false,
+      });
+      avgDotMesh = new THREE.Mesh(avgGeo, avgMat);
+      avgDotMesh.rotation.x = -Math.PI / 2;
+      avgDotMesh.position.set(avgX, 0.06, avgZ);
+      avgDotMesh.renderOrder = 2;
+      scene.add(avgDotMesh);
+    }
+  }
 
   // ── Tell content.js we're ready ──────────────────────────────────────
   window.postMessage({ type: 'gsv-ready' }, '*');
@@ -135,7 +204,7 @@
   // proportionally — flight, bounce, and roll each get duration-appropriate
   // numbers of points.
   function buildTraj() {
-    const { carryDist, peakHeight, offlineDist, totalDist, descentAngle } = shot;
+    const { carryDist, peakHeight, offlineDist, totalDist, hLaunchAngle } = shot;
     const carry  = carryDist || 0;
     const peak   = peakHeight || 0;
     const offline = offlineDist || 0;
@@ -143,13 +212,23 @@
     const roll   = total - carry;
     const pts    = [];
 
+    // Curved lateral path: ball starts along hLaunchAngle then curves to offlineDist
+    // x(t) = a*t + b*t^2 where a = initial lateral velocity, b = sidespin curve
+    // At t=0: direction is hLaunchAngle relative to downrange
+    // At t=1: x = offlineDist (carry landing point)
+    const hRad = (hLaunchAngle || 0) * Math.PI / 180;
+    const initLateral = carry * Math.tan(hRad); // lateral component from launch direction
+    const curvature = offline - initLateral;     // remaining offset from spin-induced curve
+    // x(t) = initLateral * t + curvature * t^2
+
     // Phase 1: flight (parabolic arc)
     // More points = smoother. 200 points for the flight portion.
     const FLIGHT = 200;
     for (let i = 0; i <= FLIGHT; i++) {
       const t = i / FLIGHT;
+      const x = initLateral * t + curvature * t * t;
       pts.push([
-        t * offline,
+        x,
         4 * peak * t * (1 - t),
         t * carry,
       ]);
@@ -295,7 +374,7 @@
 
     // Fog matches horizon colour for seamless blending
     scene.background = new THREE.Color(0xa6d1f5);
-    scene.fog = new THREE.FogExp2(0xa6d1f5, 0.003);
+    scene.fog = new THREE.FogExp2(0xa6d1f5, 0.009);
 
     camera = new THREE.PerspectiveCamera(55, W / H, 0.1, 600);
     camera.position.set(0, 3, -4);
@@ -593,12 +672,12 @@
 
     // ── 3D grass blades (instanced) — near-camera detail ──
     {
-      const BLADE_COUNT = 100000;
+      const BLADE_COUNT = 200000;
       const BLADE_W = 0.024;
       const BLADE_H_MIN = 0.15;
       const BLADE_H_MAX = 0.35;
       const SPREAD_X = 15;   // fairway half-width
-      const SPREAD_Z = 300;  // full fairway depth
+      const SPREAD_Z = 150;  // full fairway depth (tighter to camera)
 
       // Blade geometry: tapered quad (2 triangles)
       const bladeVerts = new Float32Array([
@@ -676,7 +755,7 @@
 
             // Fade out blades far from camera
             float distFromCam = abs(pos.z - uCamZ);
-            vAlpha = 1.0 - smoothstep(15.0, 40.0, distFromCam);
+            vAlpha = 1.0 - smoothstep(10.0, 25.0, distFromCam);
 
             gl_Position = projectionMatrix * viewMatrix * vec4(pos, 1.0);
           }
@@ -739,22 +818,15 @@
     const borderGeo = new THREE.BufferGeometry().setFromPoints(borderPts);
     scene.add(new THREE.Line(borderGeo, new THREE.LineBasicMaterial({ color: 0xcccccc, transparent: true, opacity: 0.5 })));
 
-    // Tee markers — two small rounded markers at front corners (like real course markers)
-    [[-1.6, 2.0], [1.6, 2.0]].forEach(([mx, mz]) => {
-      // Rounded body — capsule shape (sphere on top of short cylinder)
-      const mBase = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.08, 0.1, 0.16, 12),
+    // Tee markers — flat squares at front edges of tee box
+    [[-2.0, 2.0], [2.0, 2.0]].forEach(([mx, mz]) => {
+      const marker = new THREE.Mesh(
+        new THREE.BoxGeometry(0.3, 0.12, 0.3),
         new THREE.MeshPhongMaterial({ color: 0xcc2222, specular: 0x663333, shininess: 40 })
       );
-      mBase.position.set(mx, 0.18, mz);
-      mBase.castShadow = true;
-      scene.add(mBase);
-      const mTop = new THREE.Mesh(
-        new THREE.SphereGeometry(0.09, 12, 8),
-        new THREE.MeshPhongMaterial({ color: 0xdd3333, specular: 0x884444, shininess: 60 })
-      );
-      mTop.position.set(mx, 0.28, mz);
-      scene.add(mTop);
+      marker.position.set(mx, 0.22, mz);
+      marker.castShadow = true;
+      scene.add(marker);
     });
 
     // Golf tee — thin tapered peg
@@ -785,8 +857,7 @@
       ctx.fillStyle = '#ffffff';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.scale(-1, 1);
-      ctx.fillText(text, -canvas.width / 2, canvas.height / 2);
+      ctx.fillText(text, canvas.width / 2, canvas.height / 2);
       const tex = new THREE.CanvasTexture(canvas);
       tex.minFilter = THREE.LinearFilter;
       return tex;
@@ -800,9 +871,12 @@
       const h = 2.4 * s;
       const w = h * aspect;
       const mat = new THREE.MeshBasicMaterial({
-        map: tex, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false
+        map: tex, transparent: true, opacity: 0.5, side: THREE.DoubleSide,
+        depthWrite: false, depthTest: false,
       });
       const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+      m.renderOrder = 2;
+      m.rotation.y = Math.PI; // face toward the tee/camera
       m.position.set(cx, h / 2 + 0.1, cz);
       scene.add(m);
       return m;
@@ -827,29 +901,34 @@
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
       geo.setIndex(idx);
-      return new THREE.Mesh(geo, mat || new THREE.MeshBasicMaterial({
-        color: 0xffffff, transparent: true, opacity: 0.5, side: THREE.DoubleSide
+      const m = new THREE.Mesh(geo, mat || new THREE.MeshBasicMaterial({
+        color: 0xffffff, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false
       }));
+      m.renderOrder = 1;
+      return m;
     }
 
-    // Paint arcs immediately (no font needed)
-    const arcThickness = 0.5; // 2× base thickness
-    [50, 100, 150, 200, 250].forEach(yds => {
+    // Paint arcs only at yardage marker intervals (every 25 yards)
+    const arcThickness = 0.5;
+    const majorYards = [50, 100, 150, 200, 250];
+    const midYards = [25, 75, 125, 175, 225, 275];
+    majorYards.forEach(yds => {
       const arc = paintArc(yds, 64, arcThickness);
       scene.add(arc);
     });
-    const minorArcMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.2, side: THREE.DoubleSide });
-    for (let y = 10; y <= 280; y += 10) {
-      if (y % 50 === 0) continue;
-      const arc = paintArc(y, 48, arcThickness, minorArcMat);
+    const midArcMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false });
+    midYards.forEach(yds => {
+      const arc = paintArc(yds, 56, arcThickness, midArcMat);
       scene.add(arc);
-    }
+    });
 
     // Paint numbers once Lexend Deca font is loaded
     fontReady.then(() => {
-      [50, 100, 150, 200, 250].forEach(yds => {
-        const left  = paintNumber(-9, yds, yds, 1.2);
-        const right = paintNumber( 9, yds, yds, 1.2);
+      majorYards.concat(midYards).forEach(yds => {
+        const isMajor = majorYards.includes(yds);
+        const scale = isMajor ? 1.2 : 0.8;
+        const left  = paintNumber(-12, yds, yds, scale);
+        const right = paintNumber( 12, yds, yds, scale);
         yardageMarkers.push({ mesh: left, yds }, { mesh: right, yds });
         // 50yd marker starts visible; others start hidden
         const startScale = yds === 50 ? 1 : 0;
@@ -867,6 +946,19 @@
     ball.castShadow = true;
     ball.position.set(0, 0.4, 0); // start on the tee
     scene.add(ball);
+
+    // Distance counter sprite — follows ball during flight
+    distCanvas = document.createElement('canvas');
+    distCanvas.width = 512;
+    distCanvas.height = 128;
+    distCtx = distCanvas.getContext('2d');
+    distTex = new THREE.CanvasTexture(distCanvas);
+    distTex.minFilter = THREE.LinearFilter;
+    const distMat = new THREE.SpriteMaterial({ map: distTex, transparent: true, depthTest: false });
+    distSprite = new THREE.Sprite(distMat);
+    distSprite.scale.set(4, 1, 1);
+    distSprite.visible = false;
+    scene.add(distSprite);
 
     // Shadow disk
     shadowDisk = new THREE.Mesh(
@@ -894,6 +986,83 @@
   let lastFrameTime = 0;
   let animProgress = 0; // 0..1 through the trajectory
 
+  // ── Birds eye camera ──────────────────────────────────────────────────
+  let _camAnim = null; // active camera animation
+
+  function updateBirdsEye() {
+    if (!camera || !birdsEye) return;
+    camera.near = 1;
+    camera.updateProjectionMatrix();
+
+    // Figure out where the dots are centered
+    let cx = 0, cz = 100, spread = 40;
+    if (landingDots.length > 0) {
+      let sumX = 0, sumZ = 0, minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      for (const m of landingDots) {
+        sumX += m.position.x; sumZ += m.position.z;
+        minX = Math.min(minX, m.position.x); maxX = Math.max(maxX, m.position.x);
+        minZ = Math.min(minZ, m.position.z); maxZ = Math.max(maxZ, m.position.z);
+      }
+      cx = sumX / landingDots.length;
+      cz = sumZ / landingDots.length;
+      spread = Math.max(maxX - minX, maxZ - minZ, 30);
+    }
+    const height = Math.max(spread * 1.2, 60);
+
+    // Raise straight up from current X/Z, then drift over target
+    const fromPos = camera.position.clone();
+    const fromLook = new THREE.Vector3();
+    camera.getWorldDirection(fromLook).multiplyScalar(50).add(fromPos);
+    const toPos = new THREE.Vector3(cx, height, cz);
+    const toLook = new THREE.Vector3(cx, 0, cz);
+    const fromUp = camera.up.clone();
+    const toUp = new THREE.Vector3(0, 0, 1);
+
+    const t0 = performance.now();
+    const dur = 1800;
+    if (_camAnim) cancelAnimationFrame(_camAnim);
+    function step(now) {
+      const p = Math.min((now - t0) / dur, 1);
+      const e = p < .5 ? 2*p*p : -1+(4-2*p)*p;
+      camera.position.lerpVectors(fromPos, toPos, e);
+      camera.up.lerpVectors(fromUp, toUp, e).normalize();
+      const lk = new THREE.Vector3().lerpVectors(fromLook, toLook, e);
+      camera.lookAt(lk);
+      if (p < 1) _camAnim = requestAnimationFrame(step);
+      else _camAnim = null;
+      renderer.render(scene, camera);
+    }
+    _camAnim = requestAnimationFrame(step);
+  }
+
+  function leaveBirdsEye() {
+    camera.near = 0.1;
+    camera.updateProjectionMatrix();
+
+    const fromPos = camera.position.clone();
+    const fromUp = camera.up.clone();
+    const toUp = new THREE.Vector3(0, 1, 0);
+    const fromLook = new THREE.Vector3();
+    camera.getWorldDirection(fromLook).multiplyScalar(50).add(fromPos);
+    const toLook = new THREE.Vector3(0, 1, 25);
+
+    const t0 = performance.now();
+    const dur = 1800;
+    if (_camAnim) cancelAnimationFrame(_camAnim);
+    function step(now) {
+      const p = Math.min((now - t0) / dur, 1);
+      const e = p < .5 ? 2*p*p : -1+(4-2*p)*p;
+      camera.position.lerpVectors(fromPos, camHome, e);
+      camera.up.lerpVectors(fromUp, toUp, e).normalize();
+      const lk = new THREE.Vector3().lerpVectors(fromLook, toLook, e);
+      camera.lookAt(lk);
+      if (p < 1) _camAnim = requestAnimationFrame(step);
+      else _camAnim = null;
+      renderer.render(scene, camera);
+    }
+    _camAnim = requestAnimationFrame(step);
+  }
+
   function animate(now) {
     requestAnimationFrame(animate);
     // Update grass blade uniforms
@@ -901,6 +1070,17 @@
       window.__grassBlades.mat.uniforms.uTime.value = now * 0.001;
       window.__grassBlades.mat.uniforms.uCamZ.value = camera.position.z;
     }
+    // Update yardage markers every frame (birds eye needs them even when idle)
+    if (birdsEye) {
+      for (const ym of yardageMarkers) {
+        ym.mesh.scale.set(1, 1, 1);
+        // Normal standing rotation is (0, PI, 0). Tip forward 90deg on local X.
+        ym.mesh.rotation.set(0, Math.PI, 0);
+        ym.mesh.rotateX(-Math.PI / 2);
+        ym.mesh.position.y = 0.15;
+      }
+    }
+
     if (!running || !traj.length) { lastFrameTime = 0; renderer.render(scene, camera); return; }
 
     if (!lastFrameTime) lastFrameTime = now;
@@ -929,12 +1109,30 @@
     ball.position.set(px, py, pz);
     ball.rotation.x += animIdx <= FLIGHT_FRAMES ? 0.25 : 0.08;
 
-    // Scale yardage markers as ball approaches — grow from 0 to 1 over 30 yards
-    for (const ym of yardageMarkers) {
-      const dist = ym.yds - pz;
-      const s = dist <= 0 ? 1 : dist >= 30 ? 0 : 1 - dist / 30;
-      const sc = s * s * (3 - 2 * s); // smoothstep
-      ym.mesh.scale.set(sc, sc, sc);
+    // Live distance counter above the ball
+    if (distSprite) {
+      const dist = Math.round(pz);
+      distSprite.visible = running;
+      distSprite.position.set(px, py + 2, pz);
+      distCtx.clearRect(0, 0, 512, 128);
+      distCtx.font = '700 56px "Lexend Deca", sans-serif';
+      distCtx.fillStyle = '#ffffff';
+      distCtx.textAlign = 'center';
+      distCtx.textBaseline = 'middle';
+      distCtx.fillText(dist + ' yds', 256, 64);
+      distTex.needsUpdate = true;
+    }
+
+    // Scale yardage markers — animate in normal view (birds eye handled above)
+    if (!birdsEye) {
+      for (const ym of yardageMarkers) {
+        ym.mesh.rotation.set(0, Math.PI, 0);
+        ym.mesh.position.y = ym.mesh.geometry.parameters.height / 2 + 0.1;
+        const dist = ym.yds - pz;
+        const s = dist <= 0 ? 1 : dist >= 30 ? 0 : 1 - dist / 30;
+        const sc = s * s * (3 - 2 * s); // smoothstep
+        ym.mesh.scale.set(sc, sc, sc);
+      }
     }
 
     const hf = Math.max(0.08, 1 - py / Math.max(shot.peakHeight || 1, 0.1));
@@ -943,7 +1141,7 @@
     shadowDisk.scale.setScalar(hf);
     shadowDisk.material.opacity = 0.5 * hf;
 
-    // Rebuild trail as a mesh ribbon for visible width
+    // Rebuild trail as a mesh ribbon
     if (animIdx > 1) {
       if (trailLine) scene.remove(trailLine);
       const sampled = [];
@@ -951,12 +1149,11 @@
       for (let i = 0; i <= animIdx; i += step) sampled.push(traj[i]);
       sampled.push(traj[animIdx]);
 
-      const W = 0.065; // half-width of ribbon
+      const W = 0.065;
       const verts = [];
       const idx = [];
       for (let i = 0; i < sampled.length; i++) {
         const p = sampled[i];
-        // Compute a sideways offset perpendicular to the trail direction
         let dx = 0, dz = 0;
         if (i < sampled.length - 1) {
           dx = sampled[i+1][0] - p[0]; dz = sampled[i+1][2] - p[2];
@@ -979,25 +1176,53 @@
       scene.add(trailLine);
     }
 
-    _ct.set(px * 0.1, Math.max(4, 4 + py * 0.3), Math.max(-4, pz - 16));
-    camera.position.lerp(_ct, 0.04);
-    _lk.set(px, py * 0.3, pz + 10);
-    camera.lookAt(_lk);
+    if (!birdsEye) {
+      _ct.set(px * 0.1, Math.max(4, 4 + py * 0.8), Math.max(-4, pz - 16));
+      camera.position.lerp(_ct, 0.12);
+      _lk.set(px, py * 0.3, pz + 10);
+      camera.lookAt(_lk);
+    }
 
     if (animProgress >= hangTime + groundTime || animIdx >= traj.length - 1) {
       running = false;
-      const t0 = performance.now(), dur = 1800, from = camera.position.clone();
-      function easeHome(now) {
-        const p = Math.min((now - t0) / dur, 1);
-        const e = p < .5 ? 2*p*p : -1+(4-2*p)*p;
-        camera.position.lerpVectors(from, camHome, e);
-        camera.lookAt(0, 1, 25);
-        if (p < 1) requestAnimationFrame(easeHome);
+      if (distSprite) distSprite.visible = false;
+      if (!birdsEye) {
+        // Swoop above the landing spot, then ease home
+        const landX = px, landZ = pz;
+        const abovePos = new THREE.Vector3(landX, 25, landZ - 5);
+        const landLook = new THREE.Vector3(landX, 0, landZ);
+        const fromPos = camera.position.clone();
+        const fromLook = new THREE.Vector3();
+        camera.getWorldDirection(fromLook).multiplyScalar(20).add(fromPos);
+        const t0 = performance.now();
+        function swoopUp(now) {
+          const p = Math.min((now - t0) / 1200, 1);
+          const e = p < .5 ? 2*p*p : -1+(4-2*p)*p;
+          camera.position.lerpVectors(fromPos, abovePos, e);
+          const lk = new THREE.Vector3().lerpVectors(fromLook, landLook, e);
+          camera.lookAt(lk);
+          renderer.render(scene, camera);
+          if (p < 1) requestAnimationFrame(swoopUp);
+        }
+        requestAnimationFrame(swoopUp);
+        // Hold, then ease home
+        setTimeout(() => {
+          const t1 = performance.now(), from2 = camera.position.clone();
+          const fromLk2 = landLook.clone();
+          const homeLk = new THREE.Vector3(0, 1, 25);
+          function easeHome(now) {
+            const p = Math.min((now - t1) / 1800, 1);
+            const e = p < .5 ? 2*p*p : -1+(4-2*p)*p;
+            camera.position.lerpVectors(from2, camHome, e);
+            const lk = new THREE.Vector3().lerpVectors(fromLk2, homeLk, e);
+            camera.lookAt(lk);
+            renderer.render(scene, camera);
+            if (p < 1) requestAnimationFrame(easeHome);
+          }
+          requestAnimationFrame(easeHome);
+          setTimeout(() => { ball.position.set(TEE_POS[0], TEE_POS[1], TEE_POS[2]); }, 2000);
+        }, 2000);
       }
-      setTimeout(() => {
-        requestAnimationFrame(easeHome);
-        setTimeout(() => { ball.position.set(TEE_POS[0], TEE_POS[1], TEE_POS[2]); }, 2000);
-      }, 1200);
     }
 
     renderer.render(scene, camera);

@@ -4,6 +4,9 @@
   "version": "1.0",
   "description": "Nova Driving Range — 3D driving range overlay for your launch monitor.",
   "permissions": ["activeTab", "storage"],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": ["https://dashboard.openlaunch.io/*"],
