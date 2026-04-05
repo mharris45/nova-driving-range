@@ -30,7 +30,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["three.min.js", "sounds.js", "scene.js", "fonts/LexendDeca-Bold.ttf", "sonic.wav", "driver.mp3", "irons.mp3", "background.mp3", "wind.mp3"],
+      "resources": ["three.min.js", "sounds.js", "scene.js", "fonts/LexendDeca-Bold.ttf", "sonic.wav", "driver.mp3", "irons.mp3", "background.mp3", "wind.mp3", "report.html", "report.js"],
       "matches": ["https://dashboard.openlaunch.io/*"]
     }
   ],

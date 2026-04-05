@@ -139,7 +139,7 @@
     const dv = (f) => f?.doubleValue || 0;
     const rawBallSpeed = dv(fields.ball_speed);
     const rawVLA       = dv(fields.vertical_launch_angle);
-    const rawHLA       = dv(fields.horizontal_launch_angle);
+    const rawHLA       = -dv(fields.horizontal_launch_angle);
     const rawSpin      = dv(fields.spin);
     const rawBackspin  = dv(fields.backspin);
     const rawSidespin  = dv(fields.sidespin);
@@ -179,7 +179,7 @@
       // Fallback: calculate from raw sensor data
       shot.ballSpeed = Math.round(ballSpeedMph * 10) / 10;
       const calc = calcFlightFromRaw(ballSpeedMph, rawVLA, rawHLA, rawSpin, rawSpinAxis);
-      calc.offlineDist = -calc.offlineDist;
+      // offlineDist sign is already correct since rawHLA was negated at source
       Object.assign(shot, calc);
       shot.smashFactor    = 0;
       shot.clubSpeed      = 0;
@@ -286,6 +286,7 @@
         <button id="gsv-birdseye-btn" style="background:#1a2a3a;border:1px solid #f0c040;color:#f0c040;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:12px;font-weight:700;">🦅 BIRDS EYE</button>
         <button id="gsv-table-btn"   style="background:#1a2a3a;border:1px solid #8b949e;color:#8b949e;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:12px;font-weight:700;">📋 TABLE</button>
         <button id="gsv-csv-btn"    style="background:#1a2a3a;border:1px solid #da8ee7;color:#da8ee7;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:12px;font-weight:700;">📥 CSV</button>
+        <button id="gsv-report-btn" style="background:#1a2a3a;border:1px solid #4da6ff;color:#4da6ff;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:12px;font-weight:700;">📊 REPORT</button>
         <span id="gsv-save-status"  style="font-size:11px;color:#52b788;min-width:80px;"></span>
         <button id="gsv-close-btn"  style="background:none;border:none;color:#6e7681;font-size:22px;cursor:pointer;padding:0 4px;">✕</button>
       </div>
@@ -472,6 +473,12 @@
       st.style.color = '#52b788'; st.textContent = `✓ Exported ${shots.length} shots`;
       setTimeout(() => st.textContent = '', 3000);
     });
+  });
+
+  overlay.querySelector('#gsv-report-btn').addEventListener('click', () => {
+    const club = overlay.querySelector('#gsv-club-select').value;
+    const url = chrome.runtime.getURL('report.html') + '?club=' + encodeURIComponent(club);
+    window.open(url, '_blank');
   });
 
   // ── Shot table ─────────────────────────────────────────────────────────

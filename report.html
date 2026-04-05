@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Nova — Club Report</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0d1117;
+      color: #e6edf3;
+      min-height: 100vh;
+      padding: 40px 24px;
+    }
+
+    .header {
+      max-width: 1100px;
+      margin: 0 auto 32px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .header h1 {
+      font-size: 22px;
+      font-weight: 700;
+      color: #52b788;
+    }
+
+    .header select {
+      background: #161b22;
+      border: 1px solid #30363d;
+      color: #e6edf3;
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      outline: none;
+    }
+
+    .header .shot-count {
+      font-size: 13px;
+      color: #8b949e;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 80px 20px;
+      color: #8b949e;
+      font-size: 15px;
+    }
+
+    .dashboard {
+      max-width: 1100px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 14px;
+      margin-bottom: 32px;
+    }
+
+    .stat-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      padding: 18px 20px;
+    }
+
+    .stat-card .label {
+      font-size: 11px;
+      font-weight: 600;
+      color: #8b949e;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 6px;
+    }
+
+    .stat-card .value {
+      font-size: 26px;
+      font-weight: 700;
+      color: #e6edf3;
+    }
+
+    .stat-card .unit {
+      font-size: 13px;
+      font-weight: 400;
+      color: #8b949e;
+      margin-left: 3px;
+    }
+
+    .stat-card .sub {
+      font-size: 11px;
+      color: #8b949e;
+      margin-top: 4px;
+    }
+
+    .charts {
+      max-width: 1100px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    @media (max-width: 760px) {
+      .charts { grid-template-columns: 1fr; }
+    }
+
+    .chart-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      padding: 20px;
+    }
+
+    .chart-card h2 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #e6edf3;
+      margin-bottom: 16px;
+    }
+
+    canvas {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+
+    .quality-bars {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .quality-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .quality-row .q-label {
+      font-size: 12px;
+      font-weight: 600;
+      width: 80px;
+      text-align: right;
+      color: #e6edf3;
+    }
+
+    .quality-row .q-bar-bg {
+      flex: 1;
+      height: 20px;
+      background: #0d1117;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    .quality-row .q-bar {
+      height: 100%;
+      border-radius: 6px;
+      transition: width 0.4s ease;
+    }
+
+    .quality-row .q-pct {
+      font-size: 12px;
+      color: #8b949e;
+      width: 40px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>⛳ Club Report</h1>
+    <select id="club-select"></select>
+    <span class="shot-count" id="shot-count"></span>
+  </div>
+
+  <div id="empty" class="empty-state" style="display:none;">
+    No shots saved yet. Hit some balls and come back!
+  </div>
+
+  <div id="content" style="display:none;">
+    <div class="dashboard" id="dashboard"></div>
+    <div class="charts">
+      <div class="chart-card">
+        <h2>Shot Dispersion</h2>
+        <canvas id="dispersion-canvas" width="500" height="500"></canvas>
+      </div>
+      <div class="chart-card">
+        <h2>Offline Distribution</h2>
+        <canvas id="histogram-canvas" width="500" height="320"></canvas>
+        <div style="margin-top:20px;">
+          <h2>Shot Quality</h2>
+          <div class="quality-bars" id="quality-bars"></div>
+        </div>
+      </div>
+    </div>
+    <div class="charts" style="margin-top:20px;">
+      <div class="chart-card">
+        <h2>Ball Speed</h2>
+        <canvas id="ballspeed-canvas" width="500" height="300"></canvas>
+      </div>
+      <div class="chart-card">
+        <h2>Club Speed</h2>
+        <canvas id="clubspeed-canvas" width="500" height="300"></canvas>
+      </div>
+    </div>
+    <div class="charts" style="grid-template-columns:1fr;margin-top:20px;">
+      <div class="chart-card">
+        <h2>Swing Path Tendency</h2>
+        <canvas id="path-canvas" width="800" height="280"></canvas>
+        <div id="path-summary" style="margin-top:14px;font-size:13px;color:#e6edf3;line-height:1.7;"></div>
+      </div>
+    </div>
+    <div class="charts" style="grid-template-columns:1fr;margin-top:20px;">
+      <div class="chart-card">
+        <h2>Distance by Swing Path</h2>
+        <canvas id="pathdist-canvas" width="800" height="260"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script src="report.js"></script>
+</body>
+</html>
