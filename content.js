@@ -121,7 +121,7 @@
       shot.smashFactor    = Math.round(dv(coach.smash_factor) * 100) / 100;
       shot.carryDist      = Math.round(dv(us.carry_distance_yards) * 10) / 10;
       shot.totalDist      = Math.round(dv(us.total_distance_yards) * 10) / 10;
-      shot.offlineDist    = Math.round(dv(us.offline_distance_yards) * 10) / 10;
+      shot.offlineDist    = -Math.round(dv(us.offline_distance_yards) * 10) / 10;
       shot.peakHeight     = Math.round(dv(us.peak_height_yards) * 10) / 10;
       shot.hangTime       = Math.round(dv(coach.hang_time_seconds) * 10) / 10;
       shot.descentAngle   = Math.round(dv(coach.descent_angle_degrees) * 10) / 10;
