@@ -17,6 +17,94 @@
   const FLIGHT_FRAMES = 200; // frames for the flight portion
   let shot = {};
 
+  // ── Shot toast ──────────────────────────────────────────────────────
+  function showShotToast(name, rank) {
+    const old = document.getElementById('gsv-shot-toast');
+    if (old) old.remove();
+
+    const rankColors = { S:'#ffd700', A:'#52b788', B:'#388bfd', C:'#8b949e', D:'#6e4d30' };
+    const color = rankColors[rank] || '#ffffff';
+
+    const el = document.createElement('div');
+    el.id = 'gsv-shot-toast';
+    el.innerHTML = `
+      <span style="font-size:28px;font-weight:800;color:#fff;text-shadow:0 2px 12px rgba(0,0,0,.6);">${name}</span>
+      ${rank ? `<span style="font-size:36px;font-weight:900;color:${color};text-shadow:0 0 20px ${color}80;margin-left:12px;">${rank}</span>` : ''}
+    `;
+    Object.assign(el.style, {
+      position:'fixed', top:'40px', left:'50%', transform:'translateX(-50%) translateY(-80px)',
+      zIndex:'2147483647', display:'flex', alignItems:'center', gap:'8px',
+      padding:'14px 32px', borderRadius:'12px',
+      background:'rgba(13,17,23,0.85)', border:'1px solid ' + color,
+      backdropFilter:'blur(12px)', opacity:'0',
+      transition:'transform 0.5s cubic-bezier(0.16,1,0.3,1), opacity 0.5s ease',
+      fontFamily:'"Lexend Deca","Segoe UI",system-ui,sans-serif',
+      pointerEvents:'none',
+    });
+    document.body.appendChild(el);
+
+    requestAnimationFrame(() => {
+      el.style.transform = 'translateX(-50%) translateY(0)';
+      el.style.opacity = '1';
+    });
+    setTimeout(() => {
+      el.style.transform = 'translateX(-50%) translateY(-80px)';
+      el.style.opacity = '0';
+      setTimeout(() => el.remove(), 600);
+    }, 3500);
+  }
+
+  // ── Confetti for S-rank shots ───────────────────────────────────────
+  function spawnConfetti() {
+    const canvas = document.createElement('canvas');
+    canvas.id = 'gsv-confetti';
+    Object.assign(canvas.style, {
+      position:'fixed', inset:'0', zIndex:'2147483647', pointerEvents:'none',
+    });
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    document.body.appendChild(canvas);
+    const ctx = canvas.getContext('2d');
+
+    const colors = ['#ffd700','#ff6b6b','#52b788','#388bfd','#e879f9','#fb923c','#fff'];
+    const pieces = [];
+    for (let i = 0; i < 150; i++) {
+      pieces.push({
+        x: Math.random() * canvas.width,
+        y: Math.random() * -canvas.height,
+        w: 6 + Math.random() * 8,
+        h: 4 + Math.random() * 6,
+        color: colors[Math.floor(Math.random() * colors.length)],
+        vx: (Math.random() - 0.5) * 4,
+        vy: 2 + Math.random() * 4,
+        rot: Math.random() * 6.28,
+        rv: (Math.random() - 0.5) * 0.2,
+      });
+    }
+    const t0 = performance.now();
+    function draw() {
+      const elapsed = performance.now() - t0;
+      if (elapsed > 4000) { canvas.remove(); return; }
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const fade = elapsed > 3000 ? 1 - (elapsed - 3000) / 1000 : 1;
+      for (const p of pieces) {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.08;
+        p.rot += p.rv;
+        ctx.save();
+        ctx.globalAlpha = fade;
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.rot);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+        ctx.restore();
+      }
+      requestAnimationFrame(draw);
+    }
+    requestAnimationFrame(draw);
+  }
+
   // ── Listen for messages from content.js ─────────────────────────────
   window.addEventListener('message', (e) => {
     const d = e.data;
@@ -31,6 +119,8 @@
       shot = d.shot;
       traj = buildTraj();
       replay();
+      if (shot.shotName) showShotToast(shot.shotName, shot.shotRank);
+      if (shot.shotRank === 'S') spawnConfetti();
     }
     if (d.type === 'gsv-replay') {
       replay();

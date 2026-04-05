@@ -11,6 +11,7 @@
     carryDist:0, totalDist:0, offlineDist:0,
     peakHeight:0, hangTime:0, descentAngle:0,
     clubSpeed:0, smashFactor:0, distEfficiency:0,
+    shotName:'', shotRank:'', shotColor:'',
   };
 
   // ── Ball flight calculator ─────────────────────────────────────────────
@@ -98,13 +99,11 @@
     const rawSidespin  = dv(fields.sidespin);
     const rawSpinAxis  = dv(fields.spin_axis);
 
-    if (rawBallSpeed < 1) return false; // skip invalid/empty shots
+    if (rawBallSpeed < 1) return false;
 
-    // Ball speed from Firestore is in m/s — convert to mph for display and calc
     const ballSpeedMph = rawBallSpeed * 2.23694;
 
-    // Raw data
-    shot.ballSpeed    = Math.round(ballSpeedMph * 10) / 10;
+    // Raw sensor data
     shot.vLaunchAngle = Math.round(rawVLA * 10) / 10;
     shot.hLaunchAngle = Math.round(rawHLA * 10) / 10;
     shot.totalSpin    = Math.round(rawSpin);
@@ -112,18 +111,39 @@
     shot.sidespin     = Math.round(rawSidespin);
     shot.spinAxis     = Math.round(rawSpinAxis * 10) / 10;
 
-    // Calculated data (using mph)
-    const calc = calcFlightFromRaw(ballSpeedMph, rawVLA, rawHLA, rawSpin, rawSpinAxis);
-    // Negate offline to correct left/right orientation in the scene
-    calc.offlineDist = -calc.offlineDist;
-    Object.assign(shot, calc);
+    // Use open_golf_coach data when available (pre-calculated, accurate)
+    const coach = fields.open_golf_coach?.mapValue?.fields;
+    const us = coach?.us_customary_units?.mapValue?.fields;
 
-    // Derived
-    shot.smashFactor    = 0;
-    shot.clubSpeed      = 0;
-    shot.distEfficiency = shot.carryDist > 0
-      ? Math.round(shot.carryDist / shot.ballSpeed * 100) / 100
-      : 0;
+    if (us) {
+      shot.ballSpeed      = Math.round(dv(us.ball_speed_mph) * 10) / 10;
+      shot.clubSpeed      = Math.round(dv(us.club_speed_mph) * 10) / 10;
+      shot.smashFactor    = Math.round(dv(coach.smash_factor) * 100) / 100;
+      shot.carryDist      = Math.round(dv(us.carry_distance_yards) * 10) / 10;
+      shot.totalDist      = Math.round(dv(us.total_distance_yards) * 10) / 10;
+      shot.offlineDist    = Math.round(dv(us.offline_distance_yards) * 10) / 10;
+      shot.peakHeight     = Math.round(dv(us.peak_height_yards) * 10) / 10;
+      shot.hangTime       = Math.round(dv(coach.hang_time_seconds) * 10) / 10;
+      shot.descentAngle   = Math.round(dv(coach.descent_angle_degrees) * 10) / 10;
+      shot.distEfficiency = Math.round(dv(coach.distance_efficiency_percent));
+      shot.shotName       = coach.shot_name?.stringValue || '';
+      shot.shotRank       = coach.shot_rank?.stringValue || '';
+      shot.shotColor      = coach.shot_color_rgb?.stringValue || '';
+    } else {
+      // Fallback: calculate from raw sensor data
+      shot.ballSpeed = Math.round(ballSpeedMph * 10) / 10;
+      const calc = calcFlightFromRaw(ballSpeedMph, rawVLA, rawHLA, rawSpin, rawSpinAxis);
+      calc.offlineDist = -calc.offlineDist;
+      Object.assign(shot, calc);
+      shot.smashFactor    = 0;
+      shot.clubSpeed      = 0;
+      shot.distEfficiency = shot.carryDist > 0
+        ? Math.round(shot.carryDist / shot.ballSpeed * 100) / 100
+        : 0;
+      shot.shotName = '';
+      shot.shotRank = '';
+      shot.shotColor = '';
+    }
 
     return true;
   }
@@ -205,23 +225,39 @@
 
   // ── Stats bar ──────────────────────────────────────────────────────────
   const statDefs = [
-    ['Ball Speed','ballSpeed','mph'],['Carry','carryDist','yds'],
-    ['Total','totalDist','yds'],['Launch ↕','vLaunchAngle','°'],
-    ['Launch ↔','hLaunchAngle','°'],['Peak Ht','peakHeight','yds'],
-    ['Hang Time','hangTime','s'],['Spin','totalSpin','rpm'],
-    ['Backspin','backspin','rpm'],['Sidespin','sidespin','rpm'],
-    ['Spin Axis','spinAxis','°'],['Descent','descentAngle','°'],
-    ['Offline','offlineDist','yds'],
+    ['Ball Speed','ballSpeed','mph'],['Club Speed','clubSpeed','mph'],
+    ['Smash Factor','smashFactor',''],['Carry','carryDist','yds'],
+    ['Total','totalDist','yds'],['Offline','offlineDist','yds'],
+    ['Peak Ht','peakHeight','yds'],['Hang Time','hangTime','s'],
+    ['Launch ↕','vLaunchAngle','°'],['Launch ↔','hLaunchAngle','°'],
+    ['Spin','totalSpin','rpm'],['Backspin','backspin','rpm'],
+    ['Sidespin','sidespin','rpm'],['Spin Axis','spinAxis','°'],
+    ['Descent','descentAngle','°'],['Efficiency','distEfficiency','%'],
   ];
 
   function renderStats() {
-    overlay.querySelector('#gsv-statsbar').innerHTML = statDefs.map(([l,k,u]) => `
+    const rankColors = { S:'#ffd700', A:'#52b788', B:'#388bfd', C:'#8b949e', D:'#6e4d30' };
+    const rankCol = rankColors[shot.shotRank] || '#52b788';
+
+    // Shot name + rank badge
+    const badge = (shot.shotName || shot.shotRank) ? `
+      <div style="background:#161b22;border:1px solid ${rankCol};border-radius:8px;
+        padding:6px 14px;text-align:center;min-width:100px;">
+        <div style="color:${rankCol};font-size:14px;font-weight:700;">${shot.shotName || '—'}${shot.shotRank ? ' <span style="font-size:16px;font-weight:900;">' + shot.shotRank + '</span>' : ''}</div>
+        <div style="color:#6e7681;font-size:9px;margin-top:2px;text-transform:uppercase;letter-spacing:.5px;">Shot Type</div>
+      </div>` : '';
+
+    const cards = statDefs
+      .filter(([,k]) => shot[k] !== 0 && shot[k] !== '')
+      .map(([l,k,u]) => `
       <div style="background:#161b22;border:1px solid #21262d;border-radius:8px;
         padding:6px 14px;text-align:center;min-width:80px;">
         <div style="color:#52b788;font-size:14px;font-weight:700;">${shot[k]}${u}</div>
         <div style="color:#6e7681;font-size:9px;margin-top:2px;text-transform:uppercase;
           letter-spacing:.5px;">${l}</div>
       </div>`).join('');
+
+    overlay.querySelector('#gsv-statsbar').innerHTML = badge + cards;
   }
 
   // ── Edit bar ───────────────────────────────────────────────────────────
