@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Nova Driving Range",
+  "version": "1.0",
+  "description": "Nova Driving Range — 3D driving range overlay for your launch monitor.",
+  "permissions": ["activeTab", "storage"],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["interceptor.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "action": {
+    "default_title": "Nova Driving Range",
+    "default_popup": ""
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["three.min.js", "scene.js"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "icons": {
+    "16":  "icons/icon16.png",
+    "48":  "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
