@@ -349,7 +349,7 @@
       }
     `;
 
-    // Fairway: tight-mown, striped, lush
+    // Fairway: UE5-style lush mown grass with subsurface, specular, AO
     const fairwayFrag = `
       varying vec2 vUv;
       varying vec3 vWorldPos;
@@ -358,37 +358,96 @@
       void main() {
         vec2 p = vWorldPos.xz;
         ` + sunDir + `
+        vec3 viewDir = normalize(cameraPosition - vWorldPos);
 
-        float n    = fbm(p * 0.08);
-        float fine = gnoise(p * 15.0) * 0.5 + 0.5;
-        float micro = gnoise(p * 35.0) * 0.5 + 0.5;
+        // ── Multi-scale noise layers ──
+        float macro   = fbm(p * 0.02) * 0.5 + 0.5;        // large terrain color shift
+        float meso    = fbm(p * 0.07 + 3.0) * 0.5 + 0.5;  // medium patches
+        float detail  = gnoise(p * 12.0) * 0.5 + 0.5;      // blade clumps
+        float fine    = gnoise(p * 30.0) * 0.5 + 0.5;       // individual blades
+        float micro   = gnoise(p * 60.0) * 0.5 + 0.5;       // grain
 
-        // Mowing stripes — alternating bands along z with slight curve
-        float wobble = gnoise(vec2(p.x * 0.15, p.y * 0.02)) * 0.6;
-        float stripe = sin((p.y + wobble) * 0.785) * 0.5 + 0.5;
-        stripe = smoothstep(0.3, 0.7, stripe);
+        // ── Blade direction variation per area ──
+        float areaAngle = gnoise(p * 0.15) * 6.28;
+        vec2 rotP = vec2(cos(areaAngle)*p.x - sin(areaAngle)*p.y,
+                         sin(areaAngle)*p.x + cos(areaAngle)*p.y);
+        float bladeDir = gnoise(vec2(rotP.x * 35.0, rotP.y * 5.0)) * 0.5 + 0.5;
 
-        // Cross-hatch mowing pattern (subtle diamond)
-        float cross = sin((p.y + p.x * 0.08) * 1.5) * 0.5 + 0.5;
-        cross = smoothstep(0.4, 0.6, cross);
-        stripe = mix(stripe, cross, 0.15);
+        // ── Mowing stripes — wide bands with natural wobble ──
+        float wobble = gnoise(vec2(p.x * 0.12, p.y * 0.015)) * 0.8;
+        float stripe = sin((p.y + wobble) * 0.65) * 0.5 + 0.5;
+        stripe = smoothstep(0.25, 0.75, stripe);
 
-        vec3 light = vec3(0.18, 0.54, 0.22);
-        vec3 dark  = vec3(0.12, 0.40, 0.15);
-        vec3 col   = mix(dark, light, stripe);
+        // Diagonal cross-cut (faint diamond pattern)
+        float cross = sin((p.y + p.x * 0.1) * 1.2) * 0.5 + 0.5;
+        cross = smoothstep(0.35, 0.65, cross);
+        stripe = mix(stripe, cross, 0.12);
 
-        // Subtle variation
-        col *= 0.92 + 0.16 * (n * 0.5 + 0.5);
-        col *= 0.95 + 0.1 * fine;
-        col += (micro - 0.5) * 0.012;
+        // ── Rich color palette ──
+        vec3 lushLight  = vec3(0.15, 0.52, 0.18);
+        vec3 lushDark   = vec3(0.08, 0.36, 0.10);
+        vec3 warmGreen  = vec3(0.20, 0.50, 0.14);
+        vec3 coolGreen  = vec3(0.10, 0.44, 0.22);
+        vec3 highlight  = vec3(0.28, 0.62, 0.22);
+        vec3 shadow     = vec3(0.05, 0.22, 0.06);
 
-        // Fake diffuse
-        float ndl = max(dot(vWorldNormal, sunDir), 0.0) * 0.25 + 0.75;
-        col *= ndl;
+        // Base stripe color
+        vec3 col = mix(lushDark, lushLight, stripe);
 
-        // Distance fade
-        float dist = abs(vWorldPos.z);
-        col *= 1.0 - smoothstep(80.0, 300.0, dist) * 0.15;
+        // Macro variation — warm/cool shift across large areas
+        col = mix(col, warmGreen, macro * 0.2);
+        col = mix(col, coolGreen, (1.0 - macro) * 0.15);
+
+        // Medium patch variation
+        col = mix(col, mix(col, highlight, 0.3), smoothstep(0.4, 0.7, meso) * 0.2);
+
+        // Blade-level detail
+        col *= 0.90 + 0.20 * bladeDir;
+        col *= 0.94 + 0.12 * detail;
+        col *= 0.97 + 0.06 * fine;
+        col += (micro - 0.5) * 0.008;
+
+        // ── Ambient occlusion — darker in blade valleys ──
+        float ao = 0.85 + 0.15 * smoothstep(0.2, 0.6, detail);
+        ao *= 0.9 + 0.1 * fine;
+        col *= ao;
+
+        // ── Lighting ──
+        vec3 N = vWorldNormal;
+
+        // Diffuse — wrap lighting for softer look
+        float ndl = dot(N, sunDir) * 0.5 + 0.5;
+        ndl = ndl * ndl; // soften falloff
+        float diffuse = ndl * 0.35 + 0.65;
+        col *= diffuse;
+
+        // Subsurface scattering — warm glow when sun is behind blades
+        float sss = max(0.0, dot(viewDir, -sunDir));
+        sss = pow(sss, 3.0) * 0.15;
+        col += vec3(0.12, 0.25, 0.05) * sss;
+
+        // Specular — faint sheen on blade tips
+        vec3 halfDir = normalize(sunDir + viewDir);
+        float spec = pow(max(dot(N, halfDir), 0.0), 40.0);
+        // Modulate by blade angle so not uniform
+        spec *= 0.7 + 0.3 * bladeDir;
+        col += vec3(0.9, 0.95, 0.8) * spec * 0.08;
+
+        // ── Fresnel rim — subtle edge brightening ──
+        float fresnel = 1.0 - max(dot(N, viewDir), 0.0);
+        fresnel = pow(fresnel, 4.0);
+        col += vec3(0.1, 0.2, 0.08) * fresnel * 0.15;
+
+        // ── Distance fade & atmosphere ──
+        float dist = length(vWorldPos.xz);
+        float fogT = smoothstep(60.0, 350.0, dist);
+        vec3 fogCol = vec3(0.42, 0.55, 0.45); // atmospheric haze
+        col = mix(col, fogCol, fogT * 0.3);
+        col *= 1.0 - fogT * 0.1;
+
+        // Slight vignette toward fairway edges
+        float edgeDist = abs(vWorldPos.x) / 25.0;
+        col = mix(col, col * 0.88, smoothstep(0.7, 1.0, edgeDist));
 
         gl_FragColor = vec4(col, 1.0);
       }
@@ -441,6 +500,136 @@
     fairway.rotation.x = -Math.PI / 2;
     fairway.position.set(0, 0.01, 200);
     scene.add(fairway);
+
+    // ── 3D grass blades (instanced) — near-camera detail ──
+    {
+      const BLADE_COUNT = 100000;
+      const BLADE_W = 0.024;
+      const BLADE_H_MIN = 0.15;
+      const BLADE_H_MAX = 0.35;
+      const SPREAD_X = 15;   // fairway half-width
+      const SPREAD_Z = 300;  // full fairway depth
+
+      // Blade geometry: tapered quad (2 triangles)
+      const bladeVerts = new Float32Array([
+        -BLADE_W/2, 0, 0,
+         BLADE_W/2, 0, 0,
+         0, 1, 0,  // tip — will be scaled by instance height
+      ]);
+      const bladeIdx = [0, 1, 2];
+      const bladeGeo = new THREE.BufferGeometry();
+      bladeGeo.setAttribute('position', new THREE.Float32BufferAttribute(bladeVerts, 3));
+      bladeGeo.setIndex(bladeIdx);
+
+      // Per-instance attributes: offset (x,z), height, rotation, color variation
+      const offsets = new Float32Array(BLADE_COUNT * 2);
+      const heights = new Float32Array(BLADE_COUNT);
+      const rotations = new Float32Array(BLADE_COUNT);
+      const colorVar = new Float32Array(BLADE_COUNT);
+
+      // Simple seeded random
+      let seed = 12345;
+      function srand() { seed = (seed * 16807 + 0) % 2147483647; return (seed - 1) / 2147483646; }
+
+      for (let i = 0; i < BLADE_COUNT; i++) {
+        let bx, bz;
+        do {
+          bx = (srand() - 0.5) * 2 * SPREAD_X;
+          bz = Math.pow(srand(), 2.0) * SPREAD_Z - 10;
+        } while (Math.abs(bx) < 3.0 && bz > -3.0 && bz < 3.0); // skip tee box
+        offsets[i * 2]     = bx;
+        offsets[i * 2 + 1] = bz;
+        heights[i] = BLADE_H_MIN + srand() * (BLADE_H_MAX - BLADE_H_MIN);
+        rotations[i] = srand() * Math.PI;
+        colorVar[i] = srand();
+      }
+
+      const grassBladeMat = new THREE.ShaderMaterial({
+        side: THREE.DoubleSide,
+        transparent: true,
+        uniforms: {
+          uTime: { value: 0 },
+          uCamZ: { value: 0 },
+        },
+        vertexShader: `
+          attribute vec2 aOffset;
+          attribute float aHeight;
+          attribute float aRotation;
+          attribute float aColorVar;
+          varying float vHeight;
+          varying float vColorVar;
+          varying float vAlpha;
+          uniform float uTime;
+          uniform float uCamZ;
+          void main() {
+            vHeight = position.y;  // 0 at base, 1 at tip
+            vColorVar = aColorVar;
+
+            // Scale Y by blade height
+            vec3 pos = position;
+            pos.y *= aHeight;
+
+            // Rotate blade around Y axis
+            float c = cos(aRotation); float s = sin(aRotation);
+            pos.xz = mat2(c, -s, s, c) * pos.xz;
+
+            // Wind sway — tip bends more
+            float wind = sin(uTime * 1.5 + aOffset.x * 0.5 + aOffset.y * 0.3) * 0.03;
+            wind += sin(uTime * 2.3 + aOffset.x * 0.8) * 0.015;
+            pos.x += wind * position.y * position.y;
+            pos.z += wind * 0.5 * position.y * position.y;
+
+            // World position — fixed, no camera follow
+            pos.x += aOffset.x;
+            pos.z += aOffset.y;
+            pos.y += 0.01;
+
+            // Fade out blades far from camera
+            float distFromCam = abs(pos.z - uCamZ);
+            vAlpha = 1.0 - smoothstep(15.0, 40.0, distFromCam);
+
+            gl_Position = projectionMatrix * viewMatrix * vec4(pos, 1.0);
+          }
+        `,
+        fragmentShader: `
+          varying float vHeight;
+          varying float vColorVar;
+          varying float vAlpha;
+          void main() {
+            if (vAlpha < 0.01) discard;
+
+            // Color gradient: darker at base, lighter/yellower at tip
+            vec3 baseCol = mix(vec3(0.06, 0.28, 0.06), vec3(0.08, 0.34, 0.08), vColorVar);
+            vec3 tipCol  = mix(vec3(0.18, 0.52, 0.15), vec3(0.25, 0.58, 0.18), vColorVar);
+            vec3 col = mix(baseCol, tipCol, vHeight);
+
+            // Slight AO at base
+            col *= 0.7 + 0.3 * smoothstep(0.0, 0.3, vHeight);
+
+            gl_FragColor = vec4(col, vAlpha);
+          }
+        `,
+      });
+
+      const grassBlades = new THREE.InstancedMesh(bladeGeo, grassBladeMat, BLADE_COUNT);
+
+      // Set instance transforms to identity — positioning done in shader via attributes
+      const dummy = new THREE.Matrix4();
+      for (let i = 0; i < BLADE_COUNT; i++) {
+        grassBlades.setMatrixAt(i, dummy);
+      }
+
+      // Attach per-instance attributes
+      bladeGeo.setAttribute('aOffset', new THREE.InstancedBufferAttribute(offsets, 2));
+      bladeGeo.setAttribute('aHeight', new THREE.InstancedBufferAttribute(heights, 1));
+      bladeGeo.setAttribute('aRotation', new THREE.InstancedBufferAttribute(rotations, 1));
+      bladeGeo.setAttribute('aColorVar', new THREE.InstancedBufferAttribute(colorVar, 1));
+
+      scene.add(grassBlades);
+
+      // Store refs for animation update
+      window.__grassBlades = { mesh: grassBlades, mat: grassBladeMat };
+    }
 
     // Tee box — raised grass pad
     const teeBox = new THREE.Mesh(new THREE.BoxGeometry(5, 0.1, 5), teeboxMat);
@@ -521,7 +710,7 @@
       const h = 2.4 * s;
       const w = h * aspect;
       const mat = new THREE.MeshBasicMaterial({
-        map: tex, transparent: true, side: THREE.DoubleSide, depthWrite: false
+        map: tex, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false
       });
       const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
       m.position.set(cx, h / 2 + 0.1, cz);
@@ -599,7 +788,7 @@
     scene.add(shadowDisk);
 
     // Trail material (reused each rebuild)
-    trailMat = new THREE.LineBasicMaterial({ color: 0x52b788 });
+    trailMat = new THREE.MeshBasicMaterial({ color: 0x52b788, side: THREE.DoubleSide, transparent: true, opacity: 0.5 });
 
     traj = buildTraj();
     // Don't auto-replay on launch — just set ball on tee and start render loop
@@ -617,6 +806,11 @@
 
   function animate(now) {
     requestAnimationFrame(animate);
+    // Update grass blade uniforms
+    if (window.__grassBlades) {
+      window.__grassBlades.mat.uniforms.uTime.value = now * 0.001;
+      window.__grassBlades.mat.uniforms.uCamZ.value = camera.position.z;
+    }
     if (!running || !traj.length) { lastFrameTime = 0; renderer.render(scene, camera); return; }
 
     if (!lastFrameTime) lastFrameTime = now;
@@ -659,21 +853,39 @@
     shadowDisk.scale.setScalar(hf);
     shadowDisk.material.opacity = 0.5 * hf;
 
-    // Rebuild trail line from trajectory points visited so far
+    // Rebuild trail as a mesh ribbon for visible width
     if (animIdx > 1) {
       if (trailLine) scene.remove(trailLine);
-      const pts = [];
-      // Sample every few points to keep it efficient, but always include key points
+      const sampled = [];
       const step = Math.max(1, Math.floor(animIdx / 400));
-      for (let i = 0; i <= animIdx; i += step) {
-        const p = traj[i];
-        pts.push(new THREE.Vector3(p[0], p[1], p[2]));
+      for (let i = 0; i <= animIdx; i += step) sampled.push(traj[i]);
+      sampled.push(traj[animIdx]);
+
+      const W = 0.065; // half-width of ribbon
+      const verts = [];
+      const idx = [];
+      for (let i = 0; i < sampled.length; i++) {
+        const p = sampled[i];
+        // Compute a sideways offset perpendicular to the trail direction
+        let dx = 0, dz = 0;
+        if (i < sampled.length - 1) {
+          dx = sampled[i+1][0] - p[0]; dz = sampled[i+1][2] - p[2];
+        } else {
+          dx = p[0] - sampled[i-1][0]; dz = p[2] - sampled[i-1][2];
+        }
+        const len = Math.sqrt(dx*dx + dz*dz) || 1;
+        const nx = -dz / len * W, nz = dx / len * W;
+        verts.push(p[0] + nx, p[1], p[2] + nz);
+        verts.push(p[0] - nx, p[1], p[2] - nz);
+        if (i < sampled.length - 1) {
+          const b = i * 2;
+          idx.push(b, b+1, b+2, b+1, b+3, b+2);
+        }
       }
-      // Always include the current point
-      const last = traj[animIdx];
-      pts.push(new THREE.Vector3(last[0], last[1], last[2]));
-      const geo = new THREE.BufferGeometry().setFromPoints(pts);
-      trailLine = new THREE.Line(geo, trailMat);
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      geo.setIndex(idx);
+      trailLine = new THREE.Mesh(geo, trailMat);
       scene.add(trailLine);
     }
 
