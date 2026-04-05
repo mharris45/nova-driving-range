@@ -8,10 +8,18 @@
   let distSprite = null, distCanvas = null, distCtx = null, distTex = null;
   let traj = [], animIdx = 0, running = false;
   let trailLine = null, trailMat = null;
+  let windPlaying = false;
   const yardageMarkers = []; // { mesh, yds } for scale-in animation
   const landingDots = []; // meshes for carry landing points
   let avgDotMesh = null; // orange average landing zone marker
   let birdsEye = false;
+
+  // ── Ring Attack mode state ─────────────────────────────────────────────
+  let ringMode = false;
+  const rings = [];           // { mesh, glow, innerRadius, points, spinSpeed, scored }
+  const RING_SMALL_INNER = 4.0;  // yards — small ring (100 pts)
+  const RING_LARGE_INNER = 7.0;  // yards — large ring (50 pts)
+  const RING_TUBE = 0.4;
 
   // Load Lexend Deca font bundled with the extension
   const _fontUrl = document.currentScript?.dataset?.fontUrl;
@@ -109,6 +117,160 @@
     requestAnimationFrame(draw);
   }
 
+  // ── Ring Attack: gold confetti ───────────────────────────────────────
+  function spawnRingConfetti() {
+    const canvas = document.createElement('canvas');
+    canvas.id = 'gsv-ring-confetti';
+    Object.assign(canvas.style, {
+      position:'fixed', inset:'0', zIndex:'2147483647', pointerEvents:'none',
+    });
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    document.body.appendChild(canvas);
+    const ctx = canvas.getContext('2d');
+
+    const colors = ['#ffd700','#ffaa00','#fff700','#ffffff'];
+    const pieces = [];
+    for (let i = 0; i < 80; i++) {
+      pieces.push({
+        x: canvas.width / 2 + (Math.random() - 0.5) * canvas.width * 0.6,
+        y: canvas.height * 0.3 + (Math.random() - 0.5) * canvas.height * 0.3,
+        w: 6 + Math.random() * 8,
+        h: 4 + Math.random() * 6,
+        color: colors[Math.floor(Math.random() * colors.length)],
+        vx: (Math.random() - 0.5) * 6,
+        vy: -2 + Math.random() * 4,
+        rot: Math.random() * 6.28,
+        rv: (Math.random() - 0.5) * 0.2,
+      });
+    }
+    const t0 = performance.now();
+    function draw() {
+      const elapsed = performance.now() - t0;
+      if (elapsed > 3000) { canvas.remove(); return; }
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const fade = elapsed > 2000 ? 1 - (elapsed - 2000) / 1000 : 1;
+      for (const p of pieces) {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.1;
+        p.rot += p.rv;
+        ctx.save();
+        ctx.globalAlpha = fade;
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.rot);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+        ctx.restore();
+      }
+      requestAnimationFrame(draw);
+    }
+    requestAnimationFrame(draw);
+  }
+
+  // ── Ring Attack: ring creation & placement ─────────────────────────────
+  let ringMinDist = 25, ringMaxDist = 100;
+
+  function ringHeightForDistance(dist) {
+    // Parabolic height: low at min, apex at midpoint, low at max
+    // Simulates a realistic ball flight arc through the range
+    const mid = (ringMinDist + ringMaxDist) / 2;
+    const halfRange = (ringMaxDist - ringMinDist) / 2;
+    const t = halfRange > 0 ? (dist - mid) / halfRange : 0; // -1 at min, 0 at mid, +1 at max
+    const curve = 1 - t * t; // parabola: 1 at center, 0 at edges
+    const minH = 4 + Math.random() * 3;   // 4–7 yds at the edges
+    const maxH = 15 + Math.random() * 12; // 15–27 yds at the apex
+    return minH + curve * (maxH - minH);
+  }
+
+  function makeRingLabel(dist, ht, pts) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, 256, 128);
+    // Distance line
+    ctx.font = '700 48px "Lexend Deca", sans-serif';
+    ctx.fillStyle = '#ffd700';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(Math.round(dist) + ' yds', 128, 36);
+    // Height line
+    ctx.font = '600 32px "Lexend Deca", sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(Math.round(ht) + ' yds high', 128, 80);
+    // Points
+    ctx.font = '700 24px "Lexend Deca", sans-serif';
+    ctx.fillStyle = pts === 100 ? '#ff6b6b' : '#52b788';
+    ctx.fillText(pts + ' pts', 128, 112);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.minFilter = THREE.LinearFilter;
+    return tex;
+  }
+
+  function createRing(distance, height, lateralOffset, innerRadius, points) {
+    const geo = new THREE.TorusGeometry(innerRadius, RING_TUBE, 16, 48);
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0xffd700,
+      metalness: 0.9,
+      roughness: 0.2,
+      emissive: 0xffa500,
+      emissiveIntensity: 0.4,
+      side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    // Torus default lies in XY plane (hole faces Z) — that's correct for downrange
+    mesh.rotation.y = (Math.random() - 0.5) * 0.15; // slight tilt for visual interest
+    mesh.position.set(lateralOffset, height, distance);
+    scene.add(mesh);
+
+    // Glow light at ring center
+    const glow = new THREE.PointLight(0xffd700, 1, 10);
+    glow.position.copy(mesh.position);
+    scene.add(glow);
+
+    // Label sprite above ring showing distance, height, and points
+    const labelTex = makeRingLabel(distance, height, points);
+    const labelMat = new THREE.SpriteMaterial({ map: labelTex, transparent: true, depthTest: false });
+    const label = new THREE.Sprite(labelMat);
+    label.scale.set(5, 2.5, 1);
+    label.position.set(lateralOffset, height + innerRadius + 2, distance);
+    label.renderOrder = 10;
+    scene.add(label);
+
+    return { mesh, glow, label, innerRadius, points, spinSpeed: 0.01, scored: false };
+  }
+
+  function spawnRingSet() {
+    // All 3 rings at the same distance — easy one center, hard ones left/right
+    const range = ringMaxDist - ringMinDist;
+    const dist = ringMinDist + Math.random() * range;
+    const height = ringHeightForDistance(dist);
+    // Spread must keep small rings fully clear of the large ring
+    // Large radius + small radius + gap
+    const minSpread = RING_LARGE_INNER + RING_SMALL_INNER + 3;
+    const spread = minSpread + Math.random() * 4;
+
+    // Large ring (50 pts) — center
+    rings.push(createRing(dist, height, 0, RING_LARGE_INNER, 50));
+    // Small rings (100 pts) — left and right
+    rings.push(createRing(dist, height, -spread, RING_SMALL_INNER, 100));
+    rings.push(createRing(dist, height, spread, RING_SMALL_INNER, 100));
+  }
+
+  function spawnRings() {
+    // Remove any existing rings
+    for (const r of rings) { scene.remove(r.mesh); scene.remove(r.glow); scene.remove(r.label); }
+    rings.length = 0;
+    spawnRingSet();
+  }
+
+  function respawnAllRings() {
+    for (const r of rings) { scene.remove(r.mesh); scene.remove(r.glow); scene.remove(r.label); }
+    rings.length = 0;
+    spawnRingSet();
+  }
+
   // ── Listen for messages from content.js ─────────────────────────────
   window.addEventListener('message', (e) => {
     const d = e.data;
@@ -123,6 +285,11 @@
       shot = d.shot;
       traj = buildTraj();
       replay();
+      // Play club-appropriate impact sound
+      if (window.__gsvSounds) {
+        const isDriver = shot.carryDist > 180 || shot.ballSpeed > 140;
+        window.__gsvSounds.play(isDriver ? 'driver' : 'irons');
+      }
       if (shot.shotName) showShotToast(shot.shotName, shot.shotRank);
       if (shot.shotRank === 'S') spawnConfetti();
     }
@@ -140,6 +307,17 @@
       } else {
         leaveBirdsEye();
       }
+    }
+    if (d.type === 'gsv-ring-start') {
+      ringMode = true;
+      ringMinDist = d.minDist || 25;
+      ringMaxDist = d.maxDist || 100;
+      if (scene) spawnRings();
+    }
+    if (d.type === 'gsv-ring-end') {
+      ringMode = false;
+      for (const r of rings) { scene.remove(r.mesh); scene.remove(r.glow); scene.remove(r.label); }
+      rings.length = 0;
     }
   });
 
@@ -268,12 +446,90 @@
 
   const TEE_POS = [0, 0.4, 0]; // ball resting on tee
 
+  // ── Wind trail particles around ball during flight ──────────────────
+  const windParticles = [];
+  let windParticlePool = null;
+
+  function initWindParticles() {
+    if (windParticlePool) return;
+    const count = 30;
+    const geo = new THREE.BufferGeometry();
+    const positions = new Float32Array(count * 3);
+    const opacities = new Float32Array(count);
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('opacity', new THREE.BufferAttribute(opacities, 1));
+    const mat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      vertexShader: `
+        attribute float opacity;
+        varying float vOpacity;
+        void main() {
+          vOpacity = opacity;
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = 3.0 * (100.0 / -mv.z);
+          gl_Position = projectionMatrix * mv;
+        }
+      `,
+      fragmentShader: `
+        varying float vOpacity;
+        void main() {
+          float d = length(gl_PointCoord - vec2(0.5));
+          if (d > 0.5) discard;
+          float alpha = vOpacity * (1.0 - d * 2.0);
+          gl_FragColor = vec4(0.85, 0.92, 1.0, alpha);
+        }
+      `,
+    });
+    windParticlePool = new THREE.Points(geo, mat);
+    windParticlePool.renderOrder = 10;
+    windParticlePool.visible = false;
+    scene.add(windParticlePool);
+    for (let i = 0; i < count; i++) {
+      windParticles.push({ x:0, y:0, z:0, vx:0, vy:0, vz:0, life:0, maxLife:0 });
+    }
+  }
+
+  function updateWindParticles(bx, by, bz, active) {
+    if (!windParticlePool) return;
+    windParticlePool.visible = active;
+    if (!active) return;
+
+    const posAttr = windParticlePool.geometry.getAttribute('position');
+    const opaAttr = windParticlePool.geometry.getAttribute('opacity');
+
+    for (let i = 0; i < windParticles.length; i++) {
+      const p = windParticles[i];
+      p.life -= 0.016;
+      if (p.life <= 0) {
+        // Respawn near ball
+        p.x = bx + (Math.random() - 0.5) * 1.5;
+        p.y = by + (Math.random() - 0.5) * 1.0;
+        p.z = bz + (Math.random() - 0.5) * 1.5;
+        p.vx = -0.3 + Math.random() * 0.2;  // drift backward/sideways
+        p.vy = (Math.random() - 0.5) * 0.1;
+        p.vz = -0.8 - Math.random() * 0.4;  // stream behind
+        p.maxLife = 0.3 + Math.random() * 0.4;
+        p.life = p.maxLife;
+      }
+      p.x += p.vx;
+      p.y += p.vy;
+      p.z += p.vz;
+      posAttr.setXYZ(i, p.x, p.y, p.z);
+      opaAttr.setX(i, Math.max(0, p.life / p.maxLife) * 0.6);
+    }
+    posAttr.needsUpdate = true;
+    opaAttr.needsUpdate = true;
+  }
+
   function replay() {
     animIdx = 0; animProgress = 0; lastFrameTime = 0;
     running = true;
     if (trailLine) { scene.remove(trailLine); trailLine = null; }
     if (ball) { ball.position.set(TEE_POS[0], TEE_POS[1], TEE_POS[2]); }
     if (camera) { camera.position.set(0, 3, -4); }
+    // Start wind sound for flight
+    if (window.__gsvSounds) { window.__gsvSounds.loop('wind', 0.4); windPlaying = true; }
   }
 
   // ── Build scene ───────────────────────────────────────────────────────
@@ -976,6 +1232,14 @@
     // Don't auto-replay on launch — just set ball on tee and start render loop
     ball.position.set(TEE_POS[0], TEE_POS[1], TEE_POS[2]);
     running = false;
+
+    initWindParticles();
+
+    // Start ambient background sound
+    if (window.__gsvSounds) {
+      window.__gsvSounds.loop('background', 0.3);
+    }
+
     animate();
   }
 
@@ -1070,6 +1334,15 @@
       window.__grassBlades.mat.uniforms.uTime.value = now * 0.001;
       window.__grassBlades.mat.uniforms.uCamZ.value = camera.position.z;
     }
+    // Ring spin animation (always active when rings exist)
+    for (const ring of rings) {
+      ring.mesh.rotation.y += ring.spinSpeed;
+      if (ring.spinSpeed > 0.012) {
+        ring.spinSpeed *= 0.98;
+        if (ring.spinSpeed < 0.012) ring.spinSpeed = 0.01;
+      }
+    }
+
     // Update yardage markers every frame (birds eye needs them even when idle)
     if (birdsEye) {
       for (const ym of yardageMarkers) {
@@ -1099,6 +1372,8 @@
       const flightT = animProgress / hangTime;
       animIdx = Math.min(Math.floor(flightT * FLIGHT_FRAMES), FLIGHT_FRAMES);
     } else {
+      // Stop wind at the moment of ground impact (once)
+      if (windPlaying) { window.__gsvSounds.stopLoop('wind'); windPlaying = false; }
       // Ground phase: ease-out so ball decelerates smoothly to a stop
       const groundLinear = Math.min((animProgress - hangTime) / groundTime, 1.0);
       const groundT = groundLinear * (2 - groundLinear); // quadratic ease-out
@@ -1108,6 +1383,35 @@
 
     ball.position.set(px, py, pz);
     ball.rotation.x += animIdx <= FLIGHT_FRAMES ? 0.25 : 0.08;
+
+    // Ring Attack collision detection (flight phase only)
+    if (ringMode && animIdx > 0 && animIdx <= FLIGHT_FRAMES) {
+      for (let ri = 0; ri < rings.length; ri++) {
+        const ring = rings[ri];
+        if (ring.scored) continue;
+        const rp = ring.mesh.position;
+        // Distance from ball to ring plane (Z = downrange)
+        const dz = Math.abs(pz - rp.z);
+        if (dz > 1.5) continue;
+        // In-plane distance from ring center
+        const dx = px - rp.x;
+        const dy = py - rp.y;
+        const inPlane = Math.sqrt(dx * dx + dy * dy);
+        if (inPlane < ring.innerRadius) {
+          // HIT!
+          ring.scored = true;
+          ring.spinSpeed = 0.3;
+          if (window.__gsvSounds) window.__gsvSounds.play('ring');
+          spawnRingConfetti();
+          window.postMessage({ type: 'gsv-ring-hit', points: ring.points, ringIndex: ri }, '*');
+          // Respawn entire set at a new distance after a hit
+          setTimeout(() => respawnAllRings(), 1500);
+        }
+      }
+    }
+
+    // Wind trail particles during flight
+    updateWindParticles(px, py, pz, animIdx > 0 && animIdx <= FLIGHT_FRAMES);
 
     // Live distance counter above the ball
     if (distSprite) {

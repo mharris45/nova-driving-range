@@ -24,6 +24,13 @@
 
   let lastShotSig = ''; // dedup: skip if Firestore replays the same shot on reload
 
+  // ── Ring Attack mode state ─────────────────────────────────────────────
+  let ringModeActive = false;
+  let ringScore = 0;
+  let ringShots = 0;
+  let ringHighScore = 0;
+  const RING_MAX_SHOTS = 10;
+
   function shotHasData() {
     return shot.ballSpeed > 0;
   }
@@ -195,13 +202,44 @@
       const valid = fields.valid_launch?.booleanValue !== false;
       if (valid && updateShotFromFirestore(fields)) {
         console.log('[GSV] New shot:', shot.ballSpeed, 'mph,', shot.carryDist, 'yds carry');
-        autoSaveShot(() => {
-          refreshClubAverages(() => renderStats());
-        });
-        // Only send to scene if overlay is already open — don't auto-open
-        if (overlay.style.display === 'flex') {
-          window.postMessage({ type:'gsv-update', shot }, '*');
+
+        if (ringModeActive) {
+          // Ring mode: count shot, skip save, update HUD
+          ringShots++;
+          renderRingHUD();
+          if (overlay.style.display === 'flex') {
+            window.postMessage({ type:'gsv-update', shot }, '*');
+          }
+          // Check game over after last shot's animation (delay for flight)
+          if (ringShots >= RING_MAX_SHOTS) {
+            const hangTime = Math.max(shot.hangTime || 3, 2);
+            setTimeout(() => {
+              if (ringModeActive) endRingMode();
+            }, (hangTime + 5) * 1000);
+          }
+        } else {
+          autoSaveShot(() => {
+            refreshClubAverages(() => renderStats());
+          });
+          if (overlay.style.display === 'flex') {
+            window.postMessage({ type:'gsv-update', shot }, '*');
+          }
         }
+      }
+    }
+    // Ring hit message from scene.js
+    if (e.data?.type === 'gsv-ring-hit') {
+      ringScore += e.data.points;
+      renderRingHUD();
+      // Flash the score element
+      const scoreEl = document.getElementById('gsv-ring-score');
+      if (scoreEl) {
+        scoreEl.style.transform = 'scale(1.4)';
+        scoreEl.style.transition = 'transform 0.15s ease-out';
+        setTimeout(() => {
+          scoreEl.style.transform = 'scale(1)';
+          scoreEl.style.transition = 'transform 0.3s ease-in';
+        }, 150);
       }
     }
   });
@@ -243,6 +281,7 @@
         <select id="gsv-club-select" style="background:#0d1117;border:1px solid #30363d;color:#e6edf3;border-radius:6px;padding:5px 10px;font-size:12px;font-weight:700;cursor:pointer;outline:none;">
           ${clubs.map(c => `<option value="${c}">${c}</option>`).join('')}
         </select>
+        <button id="gsv-ring-btn" style="background:#1a2a3a;border:1px solid #ffd700;color:#ffd700;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:12px;font-weight:700;">💍 RING ATTACK</button>
         <button id="gsv-replay-btn" style="background:#1e3a2f;border:1px solid #52b788;color:#52b788;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:12px;font-weight:700;">▶ REPLAY</button>
         <button id="gsv-birdseye-btn" style="background:#1a2a3a;border:1px solid #f0c040;color:#f0c040;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:12px;font-weight:700;">🦅 BIRDS EYE</button>
         <button id="gsv-table-btn"   style="background:#1a2a3a;border:1px solid #8b949e;color:#8b949e;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:12px;font-weight:700;">📋 TABLE</button>
@@ -541,9 +580,112 @@
     window.postMessage({ type: 'gsv-birdseye', active: birdsEyeActive }, '*');
   });
 
+  // ── Ring Attack mode ────────────────────────────────────────────────────
+  const ringBtn = overlay.querySelector('#gsv-ring-btn');
+  const clubSelect = overlay.querySelector('#gsv-club-select');
+  let ringMinDist = 25, ringMaxDist = 100;
+
+  function renderRingHUD() {
+    const remaining = RING_MAX_SHOTS - ringShots;
+    overlay.querySelector('#gsv-statsbar').innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:center;gap:32px;width:100%;padding:4px 0;">
+        <div style="text-align:center;">
+          <div style="color:#ffd700;font-size:28px;font-weight:900;text-shadow:0 0 16px rgba(255,215,0,.4);" id="gsv-ring-score">${ringScore}</div>
+          <div style="color:#8b949e;font-size:10px;text-transform:uppercase;letter-spacing:.5px;">Score</div>
+        </div>
+        <div style="text-align:center;">
+          <div style="color:#e6edf3;font-size:20px;font-weight:700;">${Math.max(0, remaining)}</div>
+          <div style="color:#8b949e;font-size:10px;text-transform:uppercase;letter-spacing:.5px;">Shots Left</div>
+        </div>
+        <div style="text-align:center;">
+          <div style="color:#ffa500;font-size:16px;font-weight:700;">${ringHighScore}</div>
+          <div style="color:#8b949e;font-size:10px;text-transform:uppercase;letter-spacing:.5px;">High Score</div>
+        </div>
+      </div>`;
+  }
+
+  function renderRingSettings() {
+    const sliderTrack = 'background:#21262d;border:none;border-radius:4px;height:6px;outline:none;-webkit-appearance:none;appearance:none;width:100%;';
+    overlay.querySelector('#gsv-statsbar').innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;gap:14px;width:100%;padding:10px 0;">
+        <div style="color:#ffd700;font-size:18px;font-weight:800;letter-spacing:1px;">RING ATTACK SETTINGS</div>
+        <div style="display:flex;gap:40px;align-items:flex-start;">
+          <div style="text-align:center;min-width:160px;">
+            <div style="color:#8b949e;font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Min Distance</div>
+            <input type="range" id="gsv-ring-min" min="10" max="180" value="${ringMinDist}" step="5"
+              style="${sliderTrack}cursor:pointer;accent-color:#ffd700;">
+            <div style="color:#e6edf3;font-size:16px;font-weight:700;margin-top:4px;" id="gsv-ring-min-val">${ringMinDist} yds</div>
+          </div>
+          <div style="text-align:center;min-width:160px;">
+            <div style="color:#8b949e;font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Max Distance</div>
+            <input type="range" id="gsv-ring-max" min="10" max="180" value="${ringMaxDist}" step="5"
+              style="${sliderTrack}cursor:pointer;accent-color:#ffd700;">
+            <div style="color:#e6edf3;font-size:16px;font-weight:700;margin-top:4px;" id="gsv-ring-max-val">${ringMaxDist} yds</div>
+          </div>
+        </div>
+        <button id="gsv-ring-go" style="background:linear-gradient(135deg,#b8860b,#ffd700);border:none;color:#000;
+          border-radius:8px;padding:8px 32px;cursor:pointer;font-size:14px;font-weight:800;letter-spacing:1px;
+          margin-top:4px;transition:transform .15s;">START GAME</button>
+      </div>`;
+
+    const minSlider = document.getElementById('gsv-ring-min');
+    const maxSlider = document.getElementById('gsv-ring-max');
+    const minVal = document.getElementById('gsv-ring-min-val');
+    const maxVal = document.getElementById('gsv-ring-max-val');
+
+    minSlider.addEventListener('input', () => {
+      ringMinDist = parseInt(minSlider.value);
+      if (ringMinDist > ringMaxDist - 10) { ringMaxDist = ringMinDist + 10; maxSlider.value = ringMaxDist; maxVal.textContent = ringMaxDist + ' yds'; }
+      minVal.textContent = ringMinDist + ' yds';
+    });
+    maxSlider.addEventListener('input', () => {
+      ringMaxDist = parseInt(maxSlider.value);
+      if (ringMaxDist < ringMinDist + 10) { ringMinDist = ringMaxDist - 10; minSlider.value = ringMinDist; minVal.textContent = ringMinDist + ' yds'; }
+      maxVal.textContent = ringMaxDist + ' yds';
+    });
+
+    document.getElementById('gsv-ring-go').addEventListener('click', () => {
+      ringScore = 0;
+      ringShots = 0;
+      renderRingHUD();
+      window.postMessage({ type: 'gsv-ring-start', minDist: ringMinDist, maxDist: ringMaxDist }, '*');
+    });
+  }
+
+  function endRingMode() {
+    // Save high score if beaten
+    if (ringScore > ringHighScore) {
+      ringHighScore = ringScore;
+      chrome.storage.local.set({ ringHighScore });
+    }
+    ringModeActive = false;
+    ringBtn.textContent = '💍 RING ATTACK';
+    ringBtn.style.background = '#1a2a3a';
+    clubSelect.style.display = '';
+    window.postMessage({ type: 'gsv-ring-end' }, '*');
+    refreshClubAverages(() => renderStats());
+  }
+
+  ringBtn.addEventListener('click', () => {
+    if (!ringModeActive) {
+      ringModeActive = true;
+      ringBtn.textContent = '💍 END GAME';
+      ringBtn.style.background = '#3a2a00';
+      clubSelect.style.display = 'none';
+      // Load high score then show settings
+      chrome.storage.local.get(['ringHighScore'], (data) => {
+        ringHighScore = data.ringHighScore || 0;
+        renderRingSettings();
+      });
+    } else {
+      endRingMode();
+    }
+  });
+
   // ── Close button ───────────────────────────────────────────────────────
   overlay.querySelector('#gsv-close-btn').addEventListener('click', () => {
     overlay.style.display = 'none';
+    if (ringModeActive) endRingMode();
   });
 
   // ── Inject Three.js then scene.js into the MAIN world ──────────────────
@@ -563,10 +705,21 @@
     const threeScript = document.createElement('script');
     threeScript.src = chrome.runtime.getURL('three.min.js');
     threeScript.onload = () => {
-      const sceneScript = document.createElement('script');
-      sceneScript.src = chrome.runtime.getURL('scene.js');
-      sceneScript.dataset.fontUrl = chrome.runtime.getURL('fonts/LexendDeca-Bold.ttf');
-      document.head.appendChild(sceneScript);
+      // Load sounds.js, then scene.js
+      const soundsScript = document.createElement('script');
+      soundsScript.src = chrome.runtime.getURL('sounds.js');
+      soundsScript.dataset.ringSound  = chrome.runtime.getURL('sonic.wav');
+      soundsScript.dataset.driver     = chrome.runtime.getURL('driver.mp3');
+      soundsScript.dataset.irons      = chrome.runtime.getURL('irons.mp3');
+      soundsScript.dataset.background = chrome.runtime.getURL('background.mp3');
+      soundsScript.dataset.wind       = chrome.runtime.getURL('wind.mp3');
+      soundsScript.onload = () => {
+        const sceneScript = document.createElement('script');
+        sceneScript.src = chrome.runtime.getURL('scene.js');
+        sceneScript.dataset.fontUrl = chrome.runtime.getURL('fonts/LexendDeca-Bold.ttf');
+        document.head.appendChild(sceneScript);
+      };
+      document.head.appendChild(soundsScript);
     };
     document.head.appendChild(threeScript);
   }
