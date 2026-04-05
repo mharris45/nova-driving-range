@@ -6,13 +6,13 @@
   "permissions": ["activeTab", "storage"],
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
+      "matches": ["https://dashboard.openlaunch.io/*"],
       "js": ["interceptor.js"],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
-      "matches": ["<all_urls>"],
+      "matches": ["https://dashboard.openlaunch.io/*"],
       "js": ["content.js"],
       "run_at": "document_idle"
     }
@@ -28,7 +28,7 @@
   "web_accessible_resources": [
     {
       "resources": ["three.min.js", "scene.js"],
-      "matches": ["<all_urls>"]
+      "matches": ["https://dashboard.openlaunch.io/*"]
     }
   ],
   "icons": {
