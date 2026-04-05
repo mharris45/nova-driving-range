@@ -27,7 +27,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["three.min.js", "scene.js"],
+      "resources": ["three.min.js", "scene.js", "fonts/LexendDeca-Bold.ttf"],
       "matches": ["https://dashboard.openlaunch.io/*"]
     }
   ],

@@ -312,6 +312,7 @@
     threeScript.onload = () => {
       const sceneScript = document.createElement('script');
       sceneScript.src = chrome.runtime.getURL('scene.js');
+      sceneScript.dataset.fontUrl = chrome.runtime.getURL('fonts/LexendDeca-Bold.ttf');
       document.head.appendChild(sceneScript);
     };
     document.head.appendChild(threeScript);

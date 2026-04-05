@@ -7,6 +7,12 @@
   let renderer, scene, camera, ball, shadowDisk, trailGeo, trailPos;
   let traj = [], animIdx = 0, running = false;
   let trailLine = null, trailMat = null;
+
+  // Load Lexend Deca font bundled with the extension
+  const _fontUrl = document.currentScript?.dataset?.fontUrl;
+  const fontReady = _fontUrl
+    ? new FontFace('Lexend Deca', `url(${_fontUrl})`).load().then(f => { document.fonts.add(f); return f; })
+    : Promise.resolve(null);
   const FLIGHT_FRAMES = 200; // frames for the flight portion
   let shot = {};
 
@@ -497,103 +503,86 @@
     scene.add(teeCup);
 
     // ── Yardage markers — football-field style painted numbers & lines ─────
-    const paintMat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
     const paintY = 0.02; // just above ground
 
-    // Helper: paint a flat rectangle on the ground
-    function paintRect(cx, cz, w, d) {
-      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d), paintMat);
-      m.rotation.x = -Math.PI / 2;
-      m.position.set(cx, paintY, cz);
+    // Canvas-based text renderer using Lexend Deca font
+    function makeTextTexture(text) {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const fontSize = 128;
+      canvas.width = 256;
+      canvas.height = 128;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.font = `700 ${fontSize}px "Lexend Deca", sans-serif`;
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.scale(-1, 1);
+      ctx.fillText(text, -canvas.width / 2, canvas.height / 2);
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.minFilter = THREE.LinearFilter;
+      return tex;
+    }
+
+    // Place a standing text sprite (Fringe-style) facing the camera/tee
+    function paintNumber(cx, cz, num, scale) {
+      const s = scale || 1;
+      const tex = makeTextTexture(String(num));
+      const aspect = 2; // canvas is 256×128
+      const h = 2.4 * s;
+      const w = h * aspect;
+      const mat = new THREE.MeshBasicMaterial({
+        map: tex, transparent: true, side: THREE.DoubleSide, depthWrite: false
+      });
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+      m.position.set(cx, h / 2 + 0.1, cz);
       scene.add(m);
     }
 
-    // 7-segment digit renderer — each digit is ~2 units tall, ~1.2 units wide
-    // Segments: top, topRight, bottomRight, bottom, bottomLeft, topLeft, middle
-    const segMap = {
-      0: [1,1,1,1,1,1,0],
-      1: [0,1,1,0,0,0,0],
-      2: [1,1,0,1,1,0,1],
-      3: [1,1,1,1,0,0,1],
-      4: [0,1,1,0,0,1,1],
-      5: [1,0,1,1,0,1,1],
-      6: [1,0,1,1,1,1,1],
-      7: [1,1,1,0,0,0,0],
-      8: [1,1,1,1,1,1,1],
-      9: [1,1,1,1,0,1,1],
-    };
-
-    function paintDigit(cx, cz, digit, scale) {
-      const s = scale || 1;
-      const segs = segMap[digit];
-      if (!segs) return;
-      const W = 1.2 * s;   // digit width
-      const H = 2.0 * s;   // digit height
-      const T = 0.18 * s;  // stroke thickness
-      const hw = W / 2;
-      const hh = H / 2;
-
-      // Camera looks down +Z, so:
-      //   "top" of digit (nearest camera) = lower Z (cz - hh)
-      //   "left" of digit (screen left) = -X ... but we view from behind,
-      //   so left/right are mirrored — swap X signs for verticals
-      if (segs[0]) paintRect(cx, cz - hh, W, T);           // top
-      if (segs[6]) paintRect(cx, cz, W, T);                 // middle
-      if (segs[3]) paintRect(cx, cz + hh, W, T);            // bottom
-
-      const qh = H / 4;
-      // Flip X: topLeft → +hw, topRight → -hw (mirror for behind-view)
-      if (segs[5]) paintRect(cx + hw - T/2, cz - qh, T, H/2); // top-left
-      if (segs[1]) paintRect(cx - hw + T/2, cz - qh, T, H/2); // top-right
-      if (segs[4]) paintRect(cx + hw - T/2, cz + qh, T, H/2); // bottom-left
-      if (segs[2]) paintRect(cx - hw + T/2, cz + qh, T, H/2); // bottom-right
-    }
-
-    function paintNumber(cx, cz, num, scale) {
-      const s = scale || 1;
-      const digits = String(num).split('').map(Number);
-      const digitW = 1.5 * s; // spacing between digit centers
-      const totalW = (digits.length - 1) * digitW;
-      const startX = cx - totalW / 2;
-      digits.forEach((d, i) => paintDigit(startX + i * digitW, cz, d, s));
-    }
-
-    // Helper: paint a half-circle arc on the ground
-    function paintArc(radius, segs, mat) {
-      const pts = [];
+    // Helper: paint a half-circle arc on the ground as a mesh strip (for reliable thickness)
+    function paintArc(radius, segs, thickness, mat) {
+      const halfT = thickness / 2;
+      const verts = [];
+      const idx = [];
       for (let i = 0; i <= segs; i++) {
-        // Arc from -90° to +90° (semicircle opening toward +Z / downrange)
         const a = -Math.PI / 2 + (i / segs) * Math.PI;
-        pts.push(new THREE.Vector3(
-          Math.sin(a) * radius,
-          paintY,
-          Math.cos(a) * radius
-        ));
+        const cos = Math.cos(a);
+        const sin = Math.sin(a);
+        verts.push(sin * (radius - halfT), paintY, cos * (radius - halfT));
+        verts.push(sin * (radius + halfT), paintY, cos * (radius + halfT));
+        if (i < segs) {
+          const b = i * 2;
+          idx.push(b, b + 1, b + 2, b + 1, b + 3, b + 2);
+        }
       }
-      const geo = new THREE.BufferGeometry().setFromPoints(pts);
-      return new THREE.Line(geo, mat || new THREE.LineBasicMaterial({
-        color: 0xffffff, transparent: true, opacity: 0.5
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      geo.setIndex(idx);
+      return new THREE.Mesh(geo, mat || new THREE.MeshBasicMaterial({
+        color: 0xffffff, transparent: true, opacity: 0.5, side: THREE.DoubleSide
       }));
     }
 
-    // Paint half-circle arcs and numbers every 50 yards
+    // Paint arcs immediately (no font needed)
+    const arcThickness = 0.5; // 2× base thickness
     [50, 100, 150, 200, 250].forEach(yds => {
-      // Half-circle arc at this yardage (radius = yardage from tee)
-      const arc = paintArc(yds, 64);
+      const arc = paintArc(yds, 64, arcThickness);
       scene.add(arc);
-
-      // Painted number on each side of center
-      paintNumber(-5, yds, yds, 1.2);
-      paintNumber( 5, yds, yds, 1.2);
     });
-
-    // Minor arcs every 10 yards (thinner, more transparent)
-    const minorArcMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.2 });
+    const minorArcMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.2, side: THREE.DoubleSide });
     for (let y = 10; y <= 280; y += 10) {
       if (y % 50 === 0) continue;
-      const arc = paintArc(y, 48, minorArcMat);
+      const arc = paintArc(y, 48, arcThickness, minorArcMat);
       scene.add(arc);
     }
+
+    // Paint numbers once Lexend Deca font is loaded
+    fontReady.then(() => {
+      [50, 100, 150, 200, 250].forEach(yds => {
+        paintNumber(-6.5, yds, yds, 1.2);
+        paintNumber( 6.5, yds, yds, 1.2);
+      });
+    });
 
 
     // Ball — golf ball is ~1.68 inches diameter ≈ 0.14 units
