@@ -11,6 +11,14 @@ A Chrome extension that adds a 3D driving range visualization overlay to the [Op
 - **Landing Dots** — Shows the last 100 carry distance landing points for the selected club on the 3D range, fading older shots for a heat-map effect
 - **Shot Grading** — Displays shot type classification and rank (S/A/B/C/D) from the OpenGolf Coach when available, with confetti for S-rank shots
 - **Club Averages** — Stats bar shows per-metric averages with comparison arrows for the selected club
+- **Club Report** — Opens a full analytics dashboard in a new tab with:
+  - Per-club stat cards (carry, total, ball speed, smash factor, spin, peak height, descent angle, offline tendency)
+  - Shot dispersion scatter plot and offline distribution histogram with normal curve
+  - Ball speed and club speed distribution charts with rolling average trendlines
+  - Shot quality breakdown (A/B/C/D grades and shot shape names)
+  - Swing path tendency analysis (out-to-in vs in-to-out) inferred from launch angle and landing point
+  - Distance comparison by swing path type
+  - All Clubs distance map — bubble chart showing every club's average landing zone on a 0–400 yd field
 
 ## Setup
 
@@ -39,6 +47,7 @@ A Chrome extension that adds a 3D driving range visualization overlay to the [Op
 6. Use **BIRDS EYE** for a top-down view of your landing dispersion
 7. Use **TABLE** to browse all saved shots with the ability to delete individual entries
 8. Use **CSV** to export all shots as a downloadable CSV file
+9. Use **REPORT** to open the Club Report dashboard in a new tab
 
 ### CSV Columns
 

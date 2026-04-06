@@ -11,6 +11,11 @@
 
   let allShots = [];
 
+  // ── Close button ────────────────────────────────────────────────────────
+  document.getElementById('close-btn').addEventListener('click', () => {
+    window.close();
+  });
+
   // ── Bootstrap ───────────────────────────────────────────────────────────
   chrome.storage.local.get(['savedShots'], ({ savedShots }) => {
     allShots = savedShots || [];
@@ -42,15 +47,30 @@
   // ── Render everything ───────────────────────────────────────────────────
   function render() {
     const club = clubSelect.value;
-    const shots = club === '__all__'
+    const isAll = club === '__all__';
+    const shots = isAll
       ? allShots
       : allShots.filter(s => (s.club || 'Unknown') === club);
+
+    const allPanel = document.getElementById('all-clubs-panel');
+    const singlePanel = document.getElementById('single-club-panel');
 
     shotCountEl.textContent = `${shots.length} shot${shots.length !== 1 ? 's' : ''}`;
     if (shots.length === 0) {
       dashboardEl.innerHTML = '';
       qualityEl.innerHTML = '';
+      allPanel.style.display = 'none';
+      singlePanel.style.display = '';
       return;
+    }
+
+    if (isAll) {
+      allPanel.style.display = '';
+      singlePanel.style.display = '';
+      renderAllClubs(allShots);
+    } else {
+      allPanel.style.display = 'none';
+      singlePanel.style.display = '';
     }
 
     renderStats(shots);
@@ -673,6 +693,184 @@
     ctx.fillStyle = '#8b949e';
     ctx.font = '11px system-ui';
     ctx.fillText(`μ = ${mean.toFixed(1)}   σ = ${stdDev.toFixed(1)}   range: ${minV.toFixed(1)}–${maxV.toFixed(1)}`, pad.left + 4, h - pad.bottom - 6);
+  }
+
+  // ── All Clubs distance map ───────────────────────────────────────────────
+  const CLUB_PALETTE = [
+    '#4da6ff', '#52b788', '#f0c040', '#da8ee7', '#ff6b6b',
+    '#45d9c8', '#ff9f43', '#a29bfe', '#fd79a8', '#6c5ce7',
+    '#00cec9', '#e17055', '#74b9ff', '#55efc4', '#ffeaa7',
+  ];
+
+  function renderAllClubs(shots) {
+    const canvas = document.getElementById('allclubs-canvas');
+    const legendEl = document.getElementById('allclubs-legend');
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth;
+    const h = 600;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    canvas.style.height = h + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    ctx.fillStyle = '#0d1117';
+    ctx.fillRect(0, 0, w, h);
+
+    // Group shots by club
+    const clubMap = {};
+    for (const s of shots) {
+      const c = s.club || 'Unknown';
+      if (!clubMap[c]) clubMap[c] = [];
+      clubMap[c].push(s);
+    }
+    const clubNames = Object.keys(clubMap).sort((a, b) => {
+      // Sort by avg carry descending so longest club is first
+      const avgA = avg(clubMap[a].map(s => s.carryDist || 0));
+      const avgB = avg(clubMap[b].map(s => s.carryDist || 0));
+      return avgB - avgA;
+    });
+
+    // Assign colors
+    const clubColor = {};
+    clubNames.forEach((c, i) => clubColor[c] = CLUB_PALETTE[i % CLUB_PALETTE.length]);
+
+    // Chart area
+    const pad = { top: 20, right: 30, bottom: 50, left: 50 };
+    const pw = w - pad.left - pad.right;
+    const ph = h - pad.top - pad.bottom;
+
+    // Fixed axes: Y = 0–400 yds, X = spread
+    const yMin = 0, yMax = 400;
+    const allOff = shots.map(s => s.offlineDist || 0);
+    const maxOff = Math.max(40, Math.max(...allOff.map(Math.abs)) * 1.2);
+
+    function toX(off) { return pad.left + pw / 2 + (off / maxOff) * (pw / 2); }
+    function toY(carry) { return pad.top + ph - ((carry - yMin) / (yMax - yMin)) * ph; }
+
+    // ── Grid ──
+    ctx.strokeStyle = '#21262d';
+    ctx.lineWidth = 1;
+
+    // Y-axis grid + labels
+    ctx.fillStyle = '#8b949e';
+    ctx.font = '11px system-ui';
+    ctx.textAlign = 'right';
+    for (let v = 0; v <= 400; v += 50) {
+      const y = toY(v);
+      ctx.beginPath();
+      ctx.moveTo(pad.left, y);
+      ctx.lineTo(w - pad.right, y);
+      ctx.stroke();
+      ctx.fillText(`${v}`, pad.left - 8, y + 4);
+    }
+    ctx.save();
+    ctx.translate(14, pad.top + ph / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = 'center';
+    ctx.fillText('Carry Distance (yds)', 0, 0);
+    ctx.restore();
+
+    // X-axis grid + labels
+    ctx.textAlign = 'center';
+    const offStep = maxOff > 80 ? 20 : maxOff > 40 ? 10 : 5;
+    for (let v = -Math.floor(maxOff / offStep) * offStep; v <= maxOff; v += offStep) {
+      const x = toX(v);
+      if (x < pad.left || x > w - pad.right) continue;
+      ctx.beginPath();
+      ctx.moveTo(x, pad.top);
+      ctx.lineTo(x, pad.top + ph);
+      ctx.strokeStyle = '#21262d';
+      ctx.stroke();
+      ctx.fillStyle = '#8b949e';
+      ctx.fillText(`${v > 0 ? '+' : ''}${v}`, x, h - pad.bottom + 16);
+    }
+    ctx.fillText('← Left     Offline (yds)     Right →', w / 2, h - 8);
+
+    // Center line
+    ctx.strokeStyle = '#30363d';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(toX(0), pad.top);
+    ctx.lineTo(toX(0), pad.top + ph);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // ── Plot individual shots (faded dots) ──
+    for (const club of clubNames) {
+      const color = clubColor[club];
+      for (const s of clubMap[club]) {
+        const carry = s.carryDist || 0;
+        const off = s.offlineDist || 0;
+        if (carry < 5) continue;
+        const x = toX(off);
+        const y = toY(carry);
+        ctx.beginPath();
+        ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.globalAlpha = 0.2;
+        ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    // ── Average bubbles per club (sized by shot count) ──
+    const maxCount = Math.max(...clubNames.map(c => clubMap[c].length));
+    const minR = 10, maxR = 36;
+
+    for (const club of clubNames) {
+      const clubShots = clubMap[club];
+      const carries = clubShots.map(s => s.carryDist || 0).filter(v => v > 0);
+      const offlines = clubShots.map(s => s.offlineDist || 0);
+      if (carries.length === 0) continue;
+
+      const ac = avg(carries);
+      const ao = avg(offlines);
+      const r = minR + ((clubShots.length / maxCount) * (maxR - minR));
+      const x = toX(ao);
+      const y = toY(ac);
+
+      // Bubble fill
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = clubColor[club];
+      ctx.globalAlpha = 0.25;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+
+      // Bubble stroke
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.strokeStyle = clubColor[club];
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Club label
+      ctx.fillStyle = '#e6edf3';
+      ctx.font = 'bold 11px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText(club, x, y - r - 5);
+
+      // Distance label inside bubble
+      ctx.fillStyle = '#e6edf3';
+      ctx.font = 'bold 12px system-ui';
+      ctx.fillText(`${ac.toFixed(0)}`, x, y + 1);
+      ctx.font = '9px system-ui';
+      ctx.fillStyle = '#8b949e';
+      ctx.fillText('yds', x, y + 12);
+    }
+
+    // ── Legend ──
+    legendEl.innerHTML = clubNames.map(club => {
+      const n = clubMap[club].length;
+      const ac = avg(clubMap[club].map(s => s.carryDist || 0).filter(v => v > 0));
+      return `<span style="display:inline-flex;align-items:center;gap:5px;font-size:12px;">
+        <span style="width:10px;height:10px;border-radius:50%;background:${clubColor[club]};display:inline-block;"></span>
+        <strong style="color:#e6edf3;">${club}</strong>
+        <span style="color:#8b949e;">${ac.toFixed(0)} yds avg · ${n} shots</span>
+      </span>`;
+    }).join('');
   }
 
   // ── Distance by swing path ──────────────────────────────────────────────
