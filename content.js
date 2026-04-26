@@ -218,8 +218,12 @@
             }, (hangTime + 5) * 1000);
           }
         } else {
+          const wasNewShot = `${shot.ballSpeed}|${shot.vLaunchAngle}|${shot.carryDist}|${shot.totalSpin}` !== lastShotSig;
           autoSaveShot(() => {
-            refreshClubAverages(() => renderStats());
+            refreshClubAverages(() => {
+              renderStats();
+              if (wasNewShot && overlay.style.display === 'flex') requestCoaching();
+            });
           });
           if (overlay.style.display === 'flex') {
             window.postMessage({ type:'gsv-update', shot }, '*');
@@ -295,6 +299,14 @@
     <div id="gsv-canvas-wrap" style="flex:1;position:relative;overflow:hidden;min-height:0;"></div>
 
     <div id="gsv-table-panel" style="display:none;flex:1;overflow-y:auto;background:#0d1117;padding:10px 20px;min-height:0;">
+    </div>
+
+    <div id="gsv-coach" style="display:none;align-items:center;gap:12px;padding:8px 20px;
+      background:linear-gradient(90deg,#0d1117,#0f1a2a,#0d1117);border-top:1px solid #21262d;
+      flex-shrink:0;min-height:38px;font-size:13px;color:#cfe9ff;line-height:1.4;">
+      <span style="color:#4da6ff;font-weight:700;letter-spacing:.5px;font-size:11px;flex-shrink:0;">🤖 COACH</span>
+      <div id="gsv-coach-text" style="flex:1;overflow:hidden;white-space:pre-wrap;"></div>
+      <button id="gsv-coach-close" style="background:none;border:none;color:#6e7681;cursor:pointer;font-size:14px;padding:0 4px;flex-shrink:0;">✕</button>
     </div>
 
     <div id="gsv-statsbar" style="display:flex;flex-wrap:wrap;gap:6px;padding:10px 20px;
@@ -385,6 +397,59 @@
     renderLandingDots();
     loadLastShot(() => refreshClubAverages(() => renderStats()));
   });
+
+  // ── AI coaching strip ──────────────────────────────────────────────────
+  const coachPanel   = overlay.querySelector('#gsv-coach');
+  const coachTextEl  = overlay.querySelector('#gsv-coach-text');
+  const coachCloseBtn = overlay.querySelector('#gsv-coach-close');
+  let coachTypeTimer = null;
+
+  coachCloseBtn.addEventListener('click', () => {
+    coachPanel.style.display = 'none';
+    if (coachTypeTimer) { clearInterval(coachTypeTimer); coachTypeTimer = null; }
+  });
+
+  function showCoach(text, color) {
+    if (coachTypeTimer) { clearInterval(coachTypeTimer); coachTypeTimer = null; }
+    coachPanel.style.display = 'flex';
+    coachTextEl.style.color = color || '#cfe9ff';
+    coachTextEl.textContent = '';
+    let i = 0;
+    coachTypeTimer = setInterval(() => {
+      i += 2;
+      coachTextEl.textContent = text.slice(0, i);
+      if (i >= text.length) { clearInterval(coachTypeTimer); coachTypeTimer = null; }
+    }, 18);
+  }
+
+  function requestCoaching() {
+    chrome.storage.local.get(['aiEnabled','aiEndpoint','aiKey','savedShots'], (cfg) => {
+      if (!cfg.aiEnabled || !cfg.aiEndpoint || !cfg.aiKey) return;
+      showCoach('Analyzing shot…', '#8b949e');
+
+      // Most recent 20 shots for this club, excluding the one just saved (latest in array).
+      const allClubShots = (cfg.savedShots || []).filter(s => s.club === selectedClub);
+      const recentShots = allClubShots.slice(-21, -1).reverse(); // newest first, up to 20
+
+      const payload = {
+        type: 'analyze-shot',
+        shot: { ...shot, club: selectedClub },
+        recentShots,
+        recentAvgs: clubAvgs,
+      };
+      chrome.runtime.sendMessage(payload, (resp) => {
+        if (chrome.runtime.lastError) {
+          showCoach('Coach unavailable: ' + chrome.runtime.lastError.message, '#f85149');
+          return;
+        }
+        if (resp?.ok && resp.text) {
+          showCoach(resp.text);
+        } else {
+          showCoach('Coach error: ' + (resp?.error || 'no response'), '#f85149');
+        }
+      });
+    });
+  }
 
   // ── Auto-save shot to CSV via background worker ───────────────────────
 

@@ -53,3 +53,57 @@ clearBtn.addEventListener('click', () => {
     showStatus('All data cleared');
   });
 });
+
+// ── AI coaching settings ─────────────────────────────────────────────
+const aiEnabledEl  = document.getElementById('aiEnabled');
+const aiEndpointEl = document.getElementById('aiEndpoint');
+const aiKeyEl      = document.getElementById('aiKey');
+const aiModelEl    = document.getElementById('aiModel');
+const aiSaveBtn    = document.getElementById('aiSaveBtn');
+const aiTestBtn    = document.getElementById('aiTestBtn');
+const aiStatusEl   = document.getElementById('aiStatus');
+
+function showAiStatus(msg, color) {
+  aiStatusEl.textContent = msg;
+  aiStatusEl.style.color = color || '#52b788';
+  aiStatusEl.classList.add('visible');
+  setTimeout(() => aiStatusEl.classList.remove('visible'), 4000);
+}
+
+chrome.storage.local.get(['aiEnabled','aiEndpoint','aiKey','aiModel'], (s) => {
+  aiEnabledEl.checked  = !!s.aiEnabled;
+  aiEndpointEl.value   = s.aiEndpoint || '';
+  aiKeyEl.value        = s.aiKey || '';
+  aiModelEl.value      = s.aiModel || '';
+});
+
+aiSaveBtn.addEventListener('click', () => {
+  chrome.storage.local.set({
+    aiEnabled:  aiEnabledEl.checked,
+    aiEndpoint: aiEndpointEl.value.trim(),
+    aiKey:      aiKeyEl.value.trim(),
+    aiModel:    aiModelEl.value.trim(),
+  }, () => showAiStatus('✓ Settings saved'));
+});
+
+aiTestBtn.addEventListener('click', () => {
+  const endpoint = aiEndpointEl.value.trim();
+  const key      = aiKeyEl.value.trim();
+  const model    = aiModelEl.value.trim();
+  if (!endpoint || !key) {
+    showAiStatus('⚠ Endpoint and API key required', '#f85149');
+    return;
+  }
+  showAiStatus('Testing…', '#8b949e');
+  chrome.runtime.sendMessage({
+    type: 'analyze-shot',
+    overrides: { endpoint, key, model },
+    testMessage: 'Reply with the single word: pong',
+  }, (resp) => {
+    if (resp?.ok) {
+      showAiStatus('✓ ' + (resp.text || '').slice(0, 80));
+    } else {
+      showAiStatus('✗ ' + (resp?.error || 'unknown error'), '#f85149');
+    }
+  });
+});

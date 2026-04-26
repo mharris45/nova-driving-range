@@ -4,6 +4,10 @@
   "version": "1.0",
   "description": "Nova Driving Range — 3D driving range overlay for your launch monitor.",
   "permissions": ["activeTab", "storage"],
+  "host_permissions": [
+    "https://*.do-ai.run/*",
+    "https://api.digitalocean.com/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },

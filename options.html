@@ -127,6 +127,50 @@
       transition: opacity 0.3s;
     }
     .status.visible { opacity: 1; }
+
+    .field { margin-bottom: 14px; }
+    .field label {
+      display: block;
+      font-size: 11px;
+      color: #8b949e;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      margin-bottom: 6px;
+    }
+    .field input {
+      width: 100%;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 13px;
+      color: #e6edf3;
+      font-family: 'Cascadia Code', 'Fira Code', monospace;
+      outline: none;
+    }
+    .field input:focus { border-color: #52b788; }
+    .field .hint {
+      font-size: 11px;
+      color: #6e7681;
+      margin-top: 6px;
+      line-height: 1.5;
+    }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .toggle-row input[type="checkbox"] {
+      width: 16px; height: 16px;
+      accent-color: #52b788;
+      cursor: pointer;
+    }
+    .toggle-row label {
+      font-size: 13px;
+      color: #e6edf3;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
@@ -158,6 +202,44 @@
       <button class="btn-primary" id="downloadBtn">Download CSV</button>
       <button class="btn-danger" id="clearBtn">Clear All Data</button>
       <span class="status" id="status"></span>
+    </div>
+
+    <hr>
+
+    <div class="info-box">
+      <h2>AI Shot Coaching (DigitalOcean)</h2>
+      <ul style="margin-bottom:18px;">
+        <li>Sends each shot to a DigitalOcean GenAI endpoint for a quick summary + coaching tip</li>
+        <li>Works with DO <strong>Agents</strong> (paste the agent endpoint, no model needed) or DO <strong>Serverless Inference</strong> (paste the inference URL + a model)</li>
+        <li>Your API key is stored locally in this browser only</li>
+      </ul>
+
+      <div class="toggle-row">
+        <input type="checkbox" id="aiEnabled">
+        <label for="aiEnabled">Enable AI coaching after each shot</label>
+      </div>
+
+      <div class="field">
+        <label for="aiEndpoint">Endpoint URL</label>
+        <input type="text" id="aiEndpoint" placeholder="https://xxx.agents.do-ai.run/api/v1/chat/completions">
+        <div class="hint">For DO Agents append <code>/api/v1/chat/completions</code>. For Serverless Inference use <code>https://inference.do-ai.run/v1/chat/completions</code>.</div>
+      </div>
+
+      <div class="field">
+        <label for="aiKey">API Key</label>
+        <input type="password" id="aiKey" placeholder="dop_v1_...">
+      </div>
+
+      <div class="field">
+        <label for="aiModel">Model (optional — leave blank for Agents)</label>
+        <input type="text" id="aiModel" placeholder="llama3.3-70b-instruct">
+      </div>
+
+      <div class="actions" style="margin-top:8px;">
+        <button class="btn-primary" id="aiSaveBtn">Save</button>
+        <button class="btn-primary" id="aiTestBtn" style="background:#1a2a3a;border-color:#388bfd;color:#388bfd;">Test Connection</button>
+        <span class="status" id="aiStatus"></span>
+      </div>
     </div>
   </div>
 
