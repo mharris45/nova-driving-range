@@ -178,8 +178,8 @@
     const halfRange = (ringMaxDist - ringMinDist) / 2;
     const t = halfRange > 0 ? (dist - mid) / halfRange : 0; // -1 at min, 0 at mid, +1 at max
     const curve = 1 - t * t; // parabola: 1 at center, 0 at edges
-    const minH = 4 + Math.random() * 3;   // 4–7 yds at the edges
-    const maxH = 15 + Math.random() * 12; // 15–27 yds at the apex
+    const minH = 2 + Math.random() * 2;   // 2–4 yds at the edges
+    const maxH = 6 + Math.random() * 10;  // 6–16 yds at the apex
     return minH + curve * (maxH - minH);
   }
 
